@@ -496,8 +496,9 @@ namespace SOMTParser{
             return mkEq(params[0], params[1]);
         }
 
-        std::vector<std::shared_ptr<DAGNode>> new_params;
-
+        bool all_boolean = true;
+        bool has_true = false;
+        bool has_false = false;
         for(size_t i=0;i<params.size();i++){
             if(sort != nullptr && !params[i]->getSort()->isEqTo(sort)) {
                 if(canExempt(params[i]->getSort(), sort)){
@@ -508,31 +509,25 @@ namespace SOMTParser{
                     return mkUnknown();
                 }
             }
-            if(params[i]->isTrue()){
-                // x = true => x
-                continue;
-            }
-            else{
-                new_params.emplace_back(params[i]);
-            }
+            all_boolean &= isBoolParam(params[i]);
+            has_true |= params[i]->isTrue();
+            has_false |= params[i]->isFalse();
         }
 
-        if(new_params.size() == 0){
-            // all true constant
-            return mkTrue();
+        if(all_boolean && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_EQ)){
+            // Equality with true requires ALL operands to be true, not merely
+            // equal to each other. Equality with false requires all to be false.
+            // mkAnd/mkOr retain these constraints while folding constants.
+            if(has_true) return mkAnd(params);
+            if(has_false) return mkNot(mkOr(params));
         }
-        else if(new_params.size() == 1){
-            // only one uncertain param
-            return new_params[0];
+
+        if(params.size() > 100){
+            // Avoid sorting large operand lists.
+            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, "eq", params);
         }
         else{
-            if(new_params.size() > 100){
-                // [OPTIMIZE] have not use mkOper, because it will sort parameters
-                return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, "eq", new_params);
-            }
-            else{
-                return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, new_params);
-            }
+            return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, params);
         }
     }
     /*
@@ -597,8 +592,7 @@ namespace SOMTParser{
         }
         std::shared_ptr<Sort> sort = getSort(params);
 
-        std::vector<std::shared_ptr<DAGNode>> new_params;
-
+        bool all_boolean = true;
         for(size_t i=0;i<params.size();i++){
             if(params[i]->isErr()) return params[i];
             if(sort != nullptr && !params[i]->getSort()->isEqTo(sort)) {
@@ -610,32 +604,25 @@ namespace SOMTParser{
                     return mkUnknown();
                 }
             }
-            if(params[i]->isFalse()){
-                // x != False => x
-                continue;
-            }
-            else{
-                new_params.emplace_back(params[i]);
+            all_boolean &= isBoolParam(params[i]);
+        }
+
+        if(all_boolean && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_DISTINCT)){
+            // Bool has only two values: three or more operands cannot all be
+            // distinct. For two operands, keep the safe constant reductions
+            // (distinct false p) -> p and (distinct true p) -> (not p).
+            if(params.size() > 2) return mkFalse();
+            if(params[0]->isCBool() || params[1]->isCBool()){
+                return mkDistinct(params[0], params[1]);
             }
         }
 
-        if(new_params.size() == 0){
-            // all false constant
-            return mkFalse();
-        }
-        else if(new_params.size() == 1){
-            // only one uncertain param
-            return new_params[0];
+        if(params.size() > 100) {
+            // Avoid sorting large operand lists.
+            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, "distinct", params);
         }
         else{
-            // for large distinct, create node directly without sorting parameters
-            // the semantics of distinct does not depend on the order of parameters, and sorting is too expensive
-            if(new_params.size() > 100) {
-                // [OPTIMIZE] have not use mkOper, because it will sort parameters
-                return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, "distinct", new_params);
-            } else {
-                return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, new_params);
-            }
+            return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, params);
         }
     }
     // CONST
