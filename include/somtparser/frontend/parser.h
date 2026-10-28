@@ -232,9 +232,13 @@ namespace SOMTParser{
         std::vector<std::shared_ptr<DAGNode>>         pending_command_params_;
         std::string                                   pending_command_logic_;
         std::string                                   source_text_;
+        // Byte offsets of line starts in source_text_, rebuilt on each input.
+        // Command ranges may be queried in any order without rescanning prefixes.
+        std::vector<size_t>                            source_line_starts_{0};
         std::string                                   source_name_ = "<memory>";
         size_t                                        next_command_index_ = 0;
 
+        void indexSourceLines();
         SourcePosition sourcePosition(size_t offset) const;
         Command makeCommand(CMD_TYPE type, size_t begin_offset,
                             size_t end_offset, size_t begin_line);

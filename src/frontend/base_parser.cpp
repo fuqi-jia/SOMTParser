@@ -815,6 +815,7 @@ namespace SOMTParser{
 			fin.close();
 		}
 		source_text_.assign(buffer, static_cast<size_t>(buflen));
+		indexSourceLines();
 		next_command_index_ = 0;
 
 		/*
@@ -868,6 +869,7 @@ namespace SOMTParser{
 	                     const std::string& source_name) {
 		if (constraint.empty()) return true;
 		source_text_ = constraint;
+		indexSourceLines();
 		source_name_ = source_name;
 		next_command_index_ = 0;
 		buffer = safe_strdup(constraint);
@@ -912,6 +914,7 @@ namespace SOMTParser{
 		buflen = 0;
 		if (constraint.empty()) return true;
 		source_text_ = constraint;
+		indexSourceLines();
 		source_name_ = source_name;
 		next_command_index_ = 0;
 
@@ -924,17 +927,21 @@ namespace SOMTParser{
 		return true;
 	}
 
+	void Parser::indexSourceLines() {
+		source_line_starts_.clear();
+		source_line_starts_.push_back(0);
+		for (size_t i = 0; i < source_text_.size(); ++i)
+			if (source_text_[i] == '\n') source_line_starts_.push_back(i + 1);
+	}
+
 	SourcePosition Parser::sourcePosition(size_t offset) const {
 		SourcePosition position;
 		position.offset = std::min(offset, source_text_.size());
-		for (size_t i = 0; i < position.offset; ++i) {
-			if (source_text_[i] == '\n') {
-				++position.line;
-				position.column = 1;
-			} else {
-				++position.column;
-			}
-		}
+		const auto next = std::upper_bound(source_line_starts_.begin(),
+		                                  source_line_starts_.end(), position.offset);
+		const size_t row = static_cast<size_t>(next - source_line_starts_.begin() - 1);
+		position.line = row + 1;
+		position.column = position.offset - source_line_starts_[row] + 1;
 		return position;
 	}
 
