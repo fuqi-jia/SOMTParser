@@ -854,24 +854,3 @@ For technical inquiries or support, please contact:
 **Fuqi Jia**  
 Email: jiafq@ios.ac.cn  
 Institute of Software, Chinese Academy of Sciences
-
-
-### Native recursive definitions and heap syntax
-
-Recursive calls retain an immutable declaration node as child zero, followed by
-actual arguments. `Parser::getRecursiveDefinitions()` returns `{symbol,
-definition}` entries for the active scope; definitions expose their body and
-formal parameters through `getFuncBody()` and `getFuncParams()`. Match calls to
-this environment by symbol identity. Keep a copy of the environment when retaining
-an assertion snapshot across `pop` or `reset`. Definition bodies never own a back
-edge to another definition, so recursive and mutually recursive inputs remain
-acyclic DAGs. Function substitution matches formal parameter identity and leaves
-inner quantifier binders intact.
-
-The parser accepts `declare-heap`, `sep.emp`, `pto`, `sep`, `wand`, and qualified
-`(as sep.nil Sort)`. It checks heap signatures and preserves spatial operators in
-the native DAG; heap satisfiability and inductive semantics belong to the consuming
-solver. `getHeapLocationSort()` and `getHeapDataSort()` expose the active signature.
-
-CMake clients that only need native DAGs and exact numeric values can link
-`SOMTParser::somtparser_ir`. Its object files are shared with the full parser build.
