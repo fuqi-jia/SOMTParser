@@ -31,6 +31,7 @@
 #include "somtparser/core/kind.h"
 #include "somtparser/core/asserting.h"
 
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <memory>
