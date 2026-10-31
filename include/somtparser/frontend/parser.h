@@ -271,9 +271,9 @@ namespace SOMTParser{
         std::string                                   pending_command_logic_;
         size_t                                        pending_push_pop_level_ = 1;
         std::string                                   source_text_;
-        // Command ranges advance through one source; avoid rescanning every
-        // prefix. Reset this cursor whenever source_text_ changes.
-        mutable SourcePosition                        source_position_;
+        // Byte offsets of line starts in source_text_, rebuilt on each input.
+        // Command ranges may be queried in any order without rescanning prefixes.
+        std::vector<size_t>                            source_line_starts_{0};
         std::string                                   source_name_ = "<memory>";
         ParseErrorException                           last_parse_error_;
         bool                                          has_parse_error_ = false;
@@ -282,6 +282,7 @@ namespace SOMTParser{
         /** Report from the last parseAny() call. */
         std::shared_ptr<Uir::TranslationReport>       last_report_;
 
+        void indexSourceLines();
         SourcePosition sourcePosition(size_t offset) const;
         Command makeCommand(CMD_TYPE type, size_t begin_offset,
                             size_t end_offset, size_t begin_line);

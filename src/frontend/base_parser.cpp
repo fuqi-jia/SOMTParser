@@ -888,7 +888,7 @@ private:
 			fin.close();
 		}
 		source_text_.assign(buffer, static_cast<size_t>(buflen));
-		source_position_ = {};
+		indexSourceLines();
 
 		/*
 		parse command
@@ -956,7 +956,7 @@ private:
 	                     const std::string& source_name) {
 		if (constraint.empty()) return true;
 		source_text_ = constraint;
-		source_position_ = {};
+		indexSourceLines();
 		source_name_ = source_name;
 		buffer = safe_strdup(constraint);
 		if (!buffer) return false;
@@ -1014,7 +1014,7 @@ private:
 		buflen = 0;
 		if (constraint.empty()) return true;
 		source_text_ = constraint;
-		source_position_ = {};
+		indexSourceLines();
 		source_name_ = source_name;
 
 		buffer = safe_strdup(constraint);
@@ -1026,20 +1026,22 @@ private:
 		return true;
 	}
 
+	void Parser::indexSourceLines() {
+		source_line_starts_.clear();
+		source_line_starts_.push_back(0);
+		for (size_t i = 0; i < source_text_.size(); ++i)
+			if (source_text_[i] == '\n') source_line_starts_.push_back(i + 1);
+	}
+
 	SourcePosition Parser::sourcePosition(size_t offset) const {
-		offset = std::min(offset, source_text_.size());
-		// Normal command ranges are monotonic, so every source byte is visited
-		// once. A backward request still has the same byte/line/column meaning.
-		if (offset < source_position_.offset) { source_position_ = {}; }
-		while (source_position_.offset < offset) {
-			if (source_text_[source_position_.offset++] == '\n') {
-				++source_position_.line;
-				source_position_.column = 1;
-			} else {
-				++source_position_.column;
-			}
-		}
-		return source_position_;
+		SourcePosition position;
+		position.offset = std::min(offset, source_text_.size());
+		const auto next = std::upper_bound(source_line_starts_.begin(),
+		                                  source_line_starts_.end(), position.offset);
+		const size_t row = static_cast<size_t>(next - source_line_starts_.begin() - 1);
+		position.line = row + 1;
+		position.column = position.offset - source_line_starts_[row] + 1;
+		return position;
 	}
 
 	Command Parser::makeCommand(CMD_TYPE type, size_t begin_offset,
