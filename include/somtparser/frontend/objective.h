@@ -34,6 +34,9 @@
 #include <vector>
 
 namespace SOMTParser{
+    /** Exact numeric token for SMT soft weights; refuses non-finite decimals. */
+    std::string softWeightToken(const std::shared_ptr<DAGNode>& weight);
+
     enum class OPT_KIND{
         // single objective
         OPT_MINIMIZE, OPT_MAXIMIZE, OPT_MAXSAT, OPT_MINSAT, 
@@ -241,6 +244,11 @@ namespace SOMTParser{
 
     OPT_KIND getOptKind(const std::string& symbol);
 
+    struct GomtSoftAssertion {
+        std::shared_ptr<DAGNode> node;
+        std::shared_ptr<DAGNode> weight;
+    };
+
     /**
      * Manager for OMT objectives: named registry (define-objective) and ordered list (minimize/maximize/lex-optimize etc.).
      */
@@ -263,6 +271,16 @@ namespace SOMTParser{
         /** Clear all objectives and named objectives. */
         void clear();
 
+        // GOMT definitions are inactive until optimize-sat selects one.
+        bool hasGomtObjectives() const;
+        void registerGomtObjective(const std::string& name, const std::shared_ptr<Objective>& obj);
+        std::shared_ptr<Objective> getGomtObjective(const std::string& name) const;
+        void addGomtSoftAssertion(const std::string& name, const std::shared_ptr<DAGNode>& node,
+                                  const std::shared_ptr<DAGNode>& weight);
+        const std::vector<GomtSoftAssertion>& getGomtSoftAssertions(const std::string& name) const;
+        void selectGomtObjective(const std::string& name);
+        std::shared_ptr<Objective> getSelectedGomtObjective() const;
+
         /** Create an empty Objective (for multi-objective; caller adds sub-objectives then addObjective). */
         std::shared_ptr<Objective> createObjective(OPT_KIND opt_type, const std::string& grp_id);
         /** Add a single objective (maxsat/minsat) to the list and return it. */
@@ -275,6 +293,9 @@ namespace SOMTParser{
     private:
         std::unordered_map<std::string, std::shared_ptr<Objective>> objective_map_;
         std::vector<std::shared_ptr<Objective>> objectives_;
+        std::unordered_map<std::string, std::shared_ptr<Objective>> gomt_objectives_;
+        std::unordered_map<std::string, std::vector<GomtSoftAssertion>> gomt_soft_assertions_;
+        std::shared_ptr<Objective> selected_gomt_objective_;
     };
 
     // smart pointers

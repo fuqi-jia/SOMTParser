@@ -1,0 +1,34 @@
+; Two instances of one subsystem, which must NOT share the child's locals.
+;
+; docs/languages/moxi.md §4.2 asks for exactly this fixture: "a system
+; instantiating the same child twice, where the two children must be in
+; different states for the property to be violated. If locals are shared, the
+; instance reports safe."
+;
+; `Cell` counts its own `set` inputs in a LOCAL `s`. The parent runs two of them
+; on independent inputs and asks whether one can be at 1 while the other is at
+; 0. With a copy of `s` per instance that is reachable in one step; with `s`
+; shared it is not, and the answer flips from "here is a witness" to "safe" --
+; silently, because the shared system is well-formed and strictly more
+; constrained.
+(define-system Cell
+  :input ((set Bool))
+  :output ((out Int))
+  :local ((s Int))
+  :init (and (= s 0) (= out 0))
+  :trans (and (= s' (ite set (+ s 1) s)) (= out' s'))
+)
+
+(define-system Pair
+  :input ((setA Bool) (setB Bool))
+  :output ((outA Int) (outB Int))
+  :subsys (A (Cell setA outA))
+  :subsys (B (Cell setB outB))
+)
+
+(check-system Pair
+  :input ((setA Bool) (setB Bool))
+  :output ((outA Int) (outB Int))
+  :reachable (split (and (= outA 1) (= outB 0)))
+  :query (q (split))
+)

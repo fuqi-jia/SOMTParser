@@ -1,0 +1,33 @@
+(define (domain test-domain)
+	(:requirements :typing :hierachie)
+	(:types
+		object
+	)
+	(:predicates
+		(p ?arg0 - object ?arg1 - object)
+		(q ?arg0 - object)
+	)
+
+	(:constants c d - object)
+
+	(:task t1 :parameters (?a ?b - object))
+
+	(:method method0
+		:parameters (?x - object)
+		:task (t1 d ?x)
+		:subtasks (and
+		 (task0 (prim ?x))
+		)
+	)
+
+	(:action prim
+		:parameters (?x - object)
+		:precondition 
+			(and
+				(forall (?x ?y - object) (or (p ?x ?y) (q ?x)))
+			)
+		:effect
+			(and
+			)
+	)
+)

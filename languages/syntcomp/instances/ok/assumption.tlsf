@@ -1,0 +1,16 @@
+INFO {
+  TITLE: "Input assumption"
+  DESCRIPTION: "The assumption restricts environment valuations"
+  SEMANTICS: Mealy
+  TARGET: Mealy
+}
+MAIN {
+  INPUTS { request; }
+  OUTPUTS { grant; }
+  ASSUMPTIONS {
+    G !request;
+  }
+  GUARANTEES {
+    G !grant;
+  }
+}

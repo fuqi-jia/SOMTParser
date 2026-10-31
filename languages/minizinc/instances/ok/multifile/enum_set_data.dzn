@@ -1,0 +1,3 @@
+allowed = [{Blue}, {}, {Red}];
+selected = {Red, Blue};
+label = "Red";

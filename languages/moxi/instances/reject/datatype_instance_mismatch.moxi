@@ -1,0 +1,4 @@
+; Inference cannot change an explicitly selected Event Bool into Event Int.
+(declare-datatype Event (par (T) ((Absent) (Present (value T)))))
+(define-system S :input ((x (Event Int))) :inv (= x (as Absent (Event Bool))))
+(check-system S :input ((x (Event Int))) :reachable (r true) :query (q (r)))

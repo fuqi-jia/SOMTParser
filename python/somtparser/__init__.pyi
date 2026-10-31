@@ -2,7 +2,8 @@
 
 from enum import Enum
 from fractions import Fraction
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from os import PathLike
+from typing import Iterator, List, Mapping, Optional, Sequence, TextIO, Tuple, Union, overload
 
 __version__: str
 
@@ -40,6 +41,7 @@ class CmdType(Enum):
     DECLARE_FUN: CmdType
     DECLARE_SORT: CmdType
     DECLARE_DATATYPES: CmdType
+    DECLARE_CODATATYPES: CmdType
     DEFINE_FUN: CmdType
     DEFINE_FUN_REC: CmdType
     DEFINE_FUNS_REC: CmdType
@@ -322,6 +324,10 @@ class Command:
     @property
     def type(self) -> CmdType: ...
     @property
+    def index(self) -> int: ...
+    @property
+    def original(self) -> str: ...
+    @property
     def line_number(self) -> int: ...
     @property
     def expr(self) -> Optional[Node]: ...
@@ -341,6 +347,8 @@ class Command:
     def logic(self) -> str: ...
     @property
     def value_terms(self) -> List[Node]: ...
+    @property
+    def assumptions(self) -> List[Node]: ...
     @property
     def keyword(self) -> str: ...
     @property
@@ -390,6 +398,8 @@ class Parser:
     def declared_variables(self) -> List[Node]: ...
     @property
     def functions(self) -> List[Node]: ...
+    @property
+    def uninterpreted_sorts(self) -> List[str]: ...
     @property
     def logic(self) -> str: ...
     @property
@@ -666,7 +676,374 @@ class Parser:
     def evaluate(self, expr: Node, model: Model) -> Node: ...
     # Output
     def to_string(self, expr: Node) -> str: ...
+    @overload
     def dump_smt2(self, filename: Optional[str] = ...) -> str: ...
+    @overload
+    def dump_smt2(self, dialect: "OmtDialect") -> str: ...
+    @overload
+    def dump_smt2(self, filename: str, dialect: "OmtDialect") -> str: ...
+    def parse_any(self, path: str) -> bool: ...
+    @property
+    def last_translation_report(self) -> "TranslationReport": ...
 
 def parse(text: str) -> Parser: ...
 def parse_file(path: str) -> Parser: ...
+
+# ===== Multi-language frontend =====
+
+from typing import Any, Dict, List, Sequence
+
+class OmtDialect:
+    SmtLib2025: "OmtDialect"
+    Gomt: "OmtDialect"
+    Z3: "OmtDialect"
+    OptiMathSAT: "OmtDialect"
+    NONE: "OmtDialect"
+
+class ErrorCode:
+    OK: "ErrorCode"
+    E_IO: "ErrorCode"
+    E_LEX: "ErrorCode"
+    E_PARSE: "ErrorCode"
+    E_TYPE: "ErrorCode"
+    E_UNSUPPORTED_CONSTRUCT: "ErrorCode"
+    E_NO_ENCODING: "ErrorCode"
+    E_FIDELITY_REJECTED: "ErrorCode"
+    E_PASS_PIPELINE: "ErrorCode"
+    E_RESOURCE: "ErrorCode"
+    E_INTERNAL: "ErrorCode"
+
+class CarrierSemantics:
+    FINITE: "CarrierSemantics"
+    INFINITE: "CarrierSemantics"
+    MIXED: "CarrierSemantics"
+
+class CarrierEmptiness:
+    NONEMPTY: "CarrierEmptiness"
+    EMPTY_ALLOWED: "CarrierEmptiness"
+    MIXED: "CarrierEmptiness"
+
+class FunctionSemantics:
+    TOTAL: "FunctionSemantics"
+    PARTIAL: "FunctionSemantics"
+    MIXED: "FunctionSemantics"
+
+class UndefinedSemantics:
+    RELATIONAL_FALSE: "UndefinedSemantics"
+    KLEENE: "UndefinedSemantics"
+    STRICT: "UndefinedSemantics"
+    ERROR: "UndefinedSemantics"
+    TARGET_DEFINED: "UndefinedSemantics"
+
+class ArithmeticSemantics:
+    NONE: "ArithmeticSemantics"
+    INTEGER: "ArithmeticSemantics"
+    RATIONAL: "ArithmeticSemantics"
+    REAL: "ArithmeticSemantics"
+    BIT_VECTOR: "ArithmeticSemantics"
+    FLOATING_POINT: "ArithmeticSemantics"
+    MIXED: "ArithmeticSemantics"
+
+class OverflowSemantics:
+    UNBOUNDED: "OverflowSemantics"
+    MODULAR: "OverflowSemantics"
+    ABORT: "OverflowSemantics"
+    TARGET_DEFINED: "OverflowSemantics"
+
+class DivisionSemantics:
+    EUCLIDEAN: "DivisionSemantics"
+    TRUNCATE_TOWARD_ZERO: "DivisionSemantics"
+    FLOOR: "DivisionSemantics"
+    EXACT_REAL: "DivisionSemantics"
+    MIXED: "DivisionSemantics"
+
+class ArraySemantics:
+    FINITE_PARTIAL: "ArraySemantics"
+    TOTAL_EXTENSIONAL: "ArraySemantics"
+    FIXED_VECTOR: "ArraySemantics"
+    NONE: "ArraySemantics"
+
+class EqualitySemantics:
+    EXTENSIONAL: "EqualitySemantics"
+    INTENSIONAL: "EqualitySemantics"
+    QUOTIENT: "EqualitySemantics"
+    MIXED: "EqualitySemantics"
+
+class QuantifierSemantics:
+    FINITE_EXPANSION: "QuantifierSemantics"
+    NATIVE: "QuantifierSemantics"
+    MIXED: "QuantifierSemantics"
+    NONE: "QuantifierSemantics"
+
+class PhaseSemantics:
+    STATIC_ERROR: "PhaseSemantics"
+    CONSTRAINT_FAILURE: "PhaseSemantics"
+    UNDEFINED_VALUE: "PhaseSemantics"
+    MIXED: "PhaseSemantics"
+
+class AnnotationSemantics:
+    SEMANTIC: "AnnotationSemantics"
+    STRATEGY_ONLY: "AnnotationSemantics"
+    MIXED: "AnnotationSemantics"
+    NONE: "AnnotationSemantics"
+
+class DecisionKind:
+    SATISFIABILITY: "DecisionKind"
+    MODEL_COUNTING: "DecisionKind"
+    OPTIMIZATION: "DecisionKind"
+    QBF_TRUTH: "DecisionKind"
+    HORN_SATISFIABILITY: "DecisionKind"
+    VALIDITY: "DecisionKind"
+    SAFETY: "DecisionKind"
+    PROGRAM_VERIFICATION: "DecisionKind"
+    REACHABILITY: "DecisionKind"
+    PLAN_EXISTENCE: "DecisionKind"
+    FUNCTION_SYNTHESIS: "DecisionKind"
+    REACTIVE_REALIZABILITY: "DecisionKind"
+
+class SmtEmbeddingKind:
+    DIRECT_REDUCTION: "SmtEmbeddingKind"
+    BOUNDED_UNDER_APPROXIMATION: "SmtEmbeddingKind"
+    NO_DIRECT_FIRST_ORDER_REDUCTION: "SmtEmbeddingKind"
+
+class Bound:
+    class Kind:
+        BMC_DEPTH: "Bound.Kind"
+        BV_WIDTH: "Bound.Kind"
+        DOMAIN_CUT: "Bound.Kind"
+        HORN_UNROLL: "Bound.Kind"
+        PLAN_HORIZON: "Bound.Kind"
+        DECOMPOSITION_DEPTH: "Bound.Kind"
+        GRAMMAR_RESTRICTION: "Bound.Kind"
+        STRATEGY_SIZE: "Bound.Kind"
+
+    BMC_DEPTH: "Bound.Kind"
+    BV_WIDTH: "Bound.Kind"
+    DOMAIN_CUT: "Bound.Kind"
+    HORN_UNROLL: "Bound.Kind"
+    PLAN_HORIZON: "Bound.Kind"
+    DECOMPOSITION_DEPTH: "Bound.Kind"
+    GRAMMAR_RESTRICTION: "Bound.Kind"
+    STRATEGY_SIZE: "Bound.Kind"
+
+    kind: "Bound.Kind"
+    value: int
+    site: str
+
+class AssumptionProfile:
+    id: str
+    carriers: CarrierSemantics
+    carrier_emptiness: CarrierEmptiness
+    functions: FunctionSemantics
+    undefined: UndefinedSemantics
+    arithmetic: ArithmeticSemantics
+    overflow: OverflowSemantics
+    division: DivisionSemantics
+    arrays: ArraySemantics
+    equality: EqualitySemantics
+    quantifiers: QuantifierSemantics
+    invalid_phase: PhaseSemantics
+    annotations: AnnotationSemantics
+
+class Institution:
+    id: str
+    surface_language: str
+    object_logic: str
+    meta_logic: str
+    sentence_space: str
+    model_class: str
+    satisfaction_relation: str
+    assumptions: AssumptionProfile
+
+class SourceSemanticSpec:
+    institution: Institution
+    decisions: List[DecisionKind]
+    smt_embedding: SmtEmbeddingKind
+    required_bounds: List[Bound.Kind]
+    decision_bounds: Dict[DecisionKind, List[Bound.Kind]]
+    rationale: str
+    @property
+    def valid(self) -> bool: ...
+    def supports(self, decision: DecisionKind) -> bool: ...
+
+class Fidelity:
+    sound: bool
+    complete: bool
+    preserves_optimum: bool
+    preserves_count: bool
+    count_status: str
+    bounds: List[Bound]
+
+class CountEvidence:
+    kind: str
+    rationale: str
+    references: List[str]
+
+class EncodingChoice:
+    site: str
+    unified_op: str
+    strategy: str
+    fidelity: Fidelity
+    count_evidence: Optional[CountEvidence]
+    rationale: str
+
+class Stats:
+    num_vars: int
+    num_constraints: int
+    num_objectives: int
+    num_smt_nodes: int
+    translate_ms: float
+    parse_ms: float
+    typecheck_ms: float
+    passes_ms: float
+    lower_ms: float
+    semantics_ms: float
+
+class Provenance:
+    somtparser_version: str
+    language_id: str
+    language_version: str
+    profile_id: str
+    profile_content_hash: str
+    target_dialect: str
+
+class Severity:
+    NOTE: "Severity"
+    WARNING: "Severity"
+    ERROR: "Severity"
+
+class Diagnostic:
+    severity: Severity
+    code: ErrorCode
+    message: str
+    file: str
+    line: int
+    column: int
+
+class TranslationReport:
+    @property
+    def fidelity(self) -> Fidelity: ...
+    @property
+    def choices(self) -> List[EncodingChoice]: ...
+    @property
+    def warnings(self) -> List[Diagnostic]: ...
+    @property
+    def stats(self) -> Stats: ...
+    @property
+    def provenance(self) -> Provenance: ...
+    @property
+    def hir_feature_counts(self) -> Dict[str, int]: ...
+    def to_json(self) -> str: ...
+
+class SetSolverRequirements:
+    @property
+    def has_sets(self) -> bool: ...
+    @property
+    def has_quantifiers(self) -> bool: ...
+    @property
+    def infinite_or_unknown_carrier(self) -> bool: ...
+    @property
+    def non_integer_carrier(self) -> bool: ...
+
+class Translation:
+    @property
+    def ok(self) -> bool: ...
+    @property
+    def parser(self) -> Parser: ...
+    @property
+    def has_parser(self) -> bool: ...
+    @property
+    def uses_packed_smt_stream(self) -> bool: ...
+    @property
+    def report(self) -> Optional[TranslationReport]: ...
+    @property
+    def diagnostics(self) -> str: ...
+    @property
+    def diagnostic_items(self) -> List[Diagnostic]: ...
+    @property
+    def smt2(self) -> str: ...
+    @property
+    def exit_code(self) -> int: ...
+    @property
+    def details(self) -> bool: ...
+    @property
+    def set_solver_requirements(self) -> SetSolverRequirements: ...
+    def to_smt2(self, dialect: OmtDialect = ...) -> str: ...
+    def _native_smt2(self) -> str: ...
+    def write_smt2(self, path: str, dialect: OmtDialect = ...) -> None: ...
+
+
+class Result:
+    status: str
+    seconds: float
+    reason: Optional[str]
+    model: Optional[str]
+    count: Optional[int]
+    objectives: Dict[str, Any]
+    stdout: str
+    backend_options: Tuple[str, ...]
+    semantic_mode: str
+
+class FidelityError(RuntimeError): ...
+
+class Formula:
+    @property
+    def translation(self) -> Translation: ...
+    @property
+    def backend(self) -> Optional[str]: ...
+    def to(self, backend: str, *, timeout: Optional[float] = ..., path: Optional[str] = ...,
+           args: Optional[Sequence[str]] = ...) -> Formula: ...
+    def script(self) -> str: ...
+    def solve(self) -> Result: ...
+    def optimize(self) -> Result: ...
+
+class TranslationError(RuntimeError):
+    code: ErrorCode
+    diagnostics: List[Diagnostic]
+
+class ModuleImport:
+    @property
+    def ok(self) -> bool: ...
+    @property
+    def diagnostics(self) -> List[Diagnostic]: ...
+    @property
+    def language(self) -> str: ...
+    @property
+    def systems(self) -> List[Dict[str, Any]]: ...
+    @property
+    def unresolved(self) -> List[Dict[str, Any]]: ...
+    def relation_smt2(self, system_index: int, relation: str) -> str: ...
+    def known_constraints_smt2(self) -> str: ...
+    def to_smt2(self) -> str: ...
+
+def import_module(path: str = ..., *, source: str = ..., language: str = ..., options: Dict[str, str] = ...) -> ModuleImport: ...
+
+def languages() -> List[str]: ...
+def profiles() -> List[str]: ...
+from .natural_language import (
+    CandidateSizeLimits as CandidateSizeLimits,
+    propose_nl as propose_nl,
+    propose_nl_with_repair as propose_nl_with_repair,
+    compile_candidate as compile_candidate,
+    translate_nl as translate_nl,
+)
+from .construction_limits import (
+    ConstructionLimits as ConstructionLimits,
+    construction_limits as construction_limits,
+    current_construction_limits as current_construction_limits,
+)
+def coverage(language: str) -> Dict[str, Any]: ...
+def source_semantics(language: str) -> SourceSemanticSpec: ...
+def translate(path: Union[str, PathLike[str]] = ..., *, source: str = ...,
+              language: str = ..., profile: Optional[str] = ...,
+              dialect: Optional[Union[str, OmtDialect]] = ...,
+              data: Sequence[Union[str, PathLike[str]]] = ...,
+              options: Optional[Mapping[str, str]] = ..., strict: bool = ...,
+              module: bool = ..., report: Union[str, PathLike[str]] = ...,
+              stdin: Optional[TextIO] = ..., output: Optional[TextIO] = ...,
+              diagnostics: Optional[TextIO] = ..., details: bool = ...) -> Translation: ...
+
+# Deprecated compatibility entry point; returns the identical Translation type.
+def convert(*args, **kwargs) -> Translation: ...
+
+from .hir import HirBuilder as HirBuilder, hir_api as hir_api, hir_schema as hir_schema

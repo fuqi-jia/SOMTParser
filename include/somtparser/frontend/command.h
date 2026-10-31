@@ -79,6 +79,8 @@ struct Command {
     // the command TYPE only). Populated by parseCommand so a downstream solver
     // can answer the query:
     std::vector<std::shared_ptr<DAGNode>> value_terms;       // get-value term list
+    // Retain the query's terms even after pop/reset removes context assumptions.
+    std::vector<std::shared_ptr<DAGNode>> assumptions;       // check-sat-assuming
     std::string keyword;                                     // echo string / get-info :keyword / get-option
 
     Command(CMD_TYPE t = CMD_TYPE(0)) : type(t) {} // initialized with default CT_UNKNOWN=0

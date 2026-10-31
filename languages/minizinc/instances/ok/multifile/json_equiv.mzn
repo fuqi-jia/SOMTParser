@@ -1,0 +1,16 @@
+set of int: allowed;
+array[1..2] of set of int: memberships;
+array[1..2, 1..2, 1..2] of int: cube;
+enum Colour;
+Colour: chosen;
+string: label;
+var int: x;
+var int: y;
+constraint x = cube[2, 2, 2];
+constraint x in allowed;
+constraint x in memberships[2];
+constraint y = cube[1, 2, 1];
+constraint y in memberships[1];
+constraint chosen = red;
+constraint label = "λ data";
+solve satisfy;

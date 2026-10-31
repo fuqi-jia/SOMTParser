@@ -24,6 +24,7 @@
 #include "somtparser/frontend/parser.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include "test_helpers.h"
@@ -102,6 +103,76 @@ int main() {
         VERIFY(!has(smt, "||y z||"));
         ParserPtr r = newParser();
         VERIFY(r->parseStr(smt));
+    }
+
+    // Function declarations, applications, definitions and binders must use
+    // the same legal spelling. Check text as well as reparsing: the reader
+    // accepts some bare names that a conforming SMT-LIB reader rejects.
+    for (const std::string name : {"f(x)", "f x", "1fun", "plain", "|f x|"}) {
+        ParserPtr p = newParser();
+        const auto integer = p->mkIntSort();
+        const std::string printed = smtSymbol(name);
+        const auto f = p->mkFuncDec(name, {integer}, integer);
+        VERIFY(has(dumpFuncDec(f), "(declare-fun " + printed + " (Int) Int)"));
+        std::ostringstream streamed;
+        dumpFuncDec(f, streamed);
+        VERIFY(streamed.str() == dumpFuncDec(f));
+        const auto application = p->mkApplyUF(integer, name, {p->mkConstInt(3)});
+        // DAGNode::toString is the raw node-name accessor; Parser::toString
+        // and dumpSMTLIB2 are the complete SMT expression serialization APIs.
+        VERIFY(application->getName() == name);
+        VERIFY(p->toString(application) == "(" + printed + " 3)");
+        VERIFY(dumpSMTLIB2(application) == "(" + printed + " 3)");
+        VERIFY(p->assert(p->mkEq(application, p->mkConstInt(4))));
+        VERIFY(newParser()->parseStr(p->dumpSMT2()));
+    }
+    {
+        // Nullary calls have no application parentheses, but their symbol
+        // spelling must still match the declaration/definition.
+        ParserPtr p = newParser();
+        const auto integer = p->mkIntSort();
+        const auto declared = p->mkFuncDec("zero args", {}, integer);
+        const auto defined = p->mkFuncDef("zero(def)", {}, integer, p->mkConstInt(1));
+        const auto recursive = p->mkFuncRec("zero rec", {}, integer, p->mkConstInt(2));
+        VERIFY(dumpFuncDec(declared) == "(declare-fun |zero args| () Int)");
+        VERIFY(p->toString(p->mkApplyUF(integer, "zero args", {})) == "|zero args|");
+        VERIFY(p->toString(p->mkApplyFunc(defined, {})) == "|zero(def)|");
+        VERIFY(p->toString(p->mkApplyRecFunc(recursive, {})) == "|zero rec|");
+        VERIFY(newParser()->parseStr(p->dumpSMT2()));
+    }
+    {
+        ParserPtr p = newParser();
+        const auto integer = p->mkIntSort();
+        const auto x = p->mkFunParamVar(integer, "arg one");
+        const auto y = p->mkFunParamVar(integer, "arg(two)");
+        const auto f = p->mkFuncDef("fun name", {x, y}, integer, p->mkAdd(x, y));
+        const std::string definition = dumpFuncDef(f);
+        VERIFY(has(definition, "(define-fun |fun name| ((|arg one| Int) (|arg(two)| Int)) Int"));
+        VERIFY(has(definition, "|arg one|"));
+        VERIFY(p->toString(p->mkApplyFunc(f, {p->mkConstInt(1), p->mkConstInt(2)}))
+               == "(|fun name| 1 2)");
+        VERIFY(newParser()->parseStr(definition));
+        const auto rec = p->mkFuncRec("rec name", {x}, integer, x);
+        VERIFY(has(dumpFuncRec(rec), "(define-fun-rec |rec name| ((|arg one| Int)) Int |arg one|)"));
+        VERIFY(p->toString(p->mkApplyRecFunc(rec, {p->mkConstInt(2)})) == "(|rec name| 2)");
+        VERIFY(newParser()->parseStr(dumpFuncRec(rec)));
+        VERIFY(newParser()->parseStr(dumpFuncsRec({rec})));
+    }
+    {
+        ParserPtr p = newParser();
+        const auto x = p->mkQuantVar("bound x", p->mkIntSort());
+        const auto y = p->mkQuantVar("bound(y)", p->mkIntSort());
+        const auto relation = p->mkLt(x, y);
+        // The C++ builders take the body first, followed by bound variables;
+        // this differs from the surface syntax and the Python convenience API.
+        for (const auto term : {p->mkForall({relation, x, y}), p->mkExists({relation, x, y})}) {
+            VERIFY(term->getChild(0) == relation);
+            VERIFY(term->getChild(1) == x && term->getChild(2) == y);
+            const std::string text = p->toString(term);
+            VERIFY(has(text, "((|bound x| Int) (|bound(y)| Int))"));
+            VERIFY(has(text, "(< |bound x| |bound(y)|)"));
+            VERIFY(newParser()->parseStr("(assert " + text + ")"));
+        }
     }
 
     std::cout << "All symbol-quoting tests passed." << std::endl;

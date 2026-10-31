@@ -71,6 +71,7 @@ void ParserContext::popScope(size_t n) {
         assumptions.resize(frame.assumptions_size);
         soft_assertions.resize(frame.soft_assertions_size);
         soft_weights.resize(frame.soft_weights_size);
+        soft_objective_positions.resize(frame.soft_assertions_size);
         split_lemmas.resize(frame.split_lemmas_size);
 
         // Remove added symbols from SymbolManager
@@ -137,6 +138,7 @@ void ParserContext::resetAssertions() {
     assumptions.clear();
     soft_assertions.clear();
     soft_weights.clear();
+    soft_objective_positions.clear();
     assertion_groups.clear();
     soft_assertion_groups.clear();
     named_assertions.clear();
@@ -144,9 +146,13 @@ void ParserContext::resetAssertions() {
     split_lemmas.clear();
     scope_stack_.clear();
     if (auto om = getObjectiveManager()) om->clear();
-    // Declarations belong to the assertion stack unless explicitly global.
-    if (!getOptions() || !getOptions()->global_declarations)
-        setSymbolManager(std::make_shared<SymbolManager>());
+
+    // reset-assertions removes every assertion level, including declarations
+    // at the base level. Global declarations survive, as do options and logic.
+    auto options = getOptions();
+    if (!options || !options->getGlobalDeclarations()) {
+        if (auto sm = getSymbolManager()) sm->clear();
+    }
 }
 
 void ParserContext::resetAll() {
@@ -155,18 +161,21 @@ void ParserContext::resetAll() {
     heap_data_sort.reset();
     heap_declaration_open = true;
     scope_stack_.clear();
-    setSymbolManager(std::make_shared<SymbolManager>());
-    setObjectiveManager(std::make_shared<ObjectiveManager>());
-    auto options = std::make_shared<GlobalOptions>();
+    if (auto symbols = getSymbolManager()) symbols->clear();
+    else setSymbolManager(std::make_shared<SymbolManager>());
+    if (auto objectives = getObjectiveManager()) objectives->clear();
+    else setObjectiveManager(std::make_shared<ObjectiveManager>());
+    GlobalOptions defaults;
     if (auto old = getOptions()) {
-        // Parser implementation policy is not an SMT-LIB script option.
-        // Preserve the embedding application's native DAG/expansion policy.
-        options->parsing_preserve_let = old->parsing_preserve_let;
-        options->expand_functions = old->expand_functions;
-        options->expand_recursive_functions = old->expand_recursive_functions;
-        options->strict_smtlib_fp = old->strict_smtlib_fp;
-    }
-    setOptions(std::move(options));
+        // Script options reset to defaults; policies set by the embedding API
+        // survive. Keep the options object visible to existing API holders.
+        if (!old->options.count("keep_let")) defaults.parsing_preserve_let = old->parsing_preserve_let;
+        if (!old->options.count("expand_functions")) defaults.expand_functions = old->expand_functions;
+        if (!old->options.count("expand_recursive_functions"))
+            defaults.expand_recursive_functions = old->expand_recursive_functions;
+        if (!old->options.count("strict_smtlib_fp")) defaults.strict_smtlib_fp = old->strict_smtlib_fp;
+        *old = std::move(defaults);
+    } else setOptions(std::make_shared<GlobalOptions>(std::move(defaults)));
 }
 
 // --- Named assertions ---
@@ -214,20 +223,20 @@ const std::string* ParserContext::getAssertionName(const std::shared_ptr<DAGNode
     return it == assertion_names_.end() ? nullptr : &it->second;
 }
 
-// --- Scope recording helpers (no-op if no active scope) ---
+// --- Scope recording helpers ---
 
 void ParserContext::registerVarInScope(const std::string& name) {
-    if (getOptions() && getOptions()->global_declarations) return;
+    if (getOptions() && getOptions()->getGlobalDeclarations()) return;
     if (!scope_stack_.empty()) scope_stack_.back().added_vars.push_back(name);
 }
 
 void ParserContext::registerFunInScope(const std::string& name) {
-    if (getOptions() && getOptions()->global_declarations) return;
+    if (getOptions() && getOptions()->getGlobalDeclarations()) return;
     if (!scope_stack_.empty()) scope_stack_.back().added_funs.push_back(name);
 }
 
 void ParserContext::registerSortInScope(const std::string& name) {
-    if (getOptions() && getOptions()->global_declarations) return;
+    if (getOptions() && getOptions()->getGlobalDeclarations()) return;
     if (!scope_stack_.empty()) scope_stack_.back().added_sorts.push_back(name);
 }
 

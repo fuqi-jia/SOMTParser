@@ -7,6 +7,7 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -20,30 +21,63 @@ void configure(const ParserPtr& parser, bool preserve) {
 }
 
 bool truth(const Node& node, unsigned assignment) {
-    VERIFY(node && node->getSort()->isBool());
-    if (node->isTrue()) return true;
-    if (node->isFalse()) return false;
-    if (node->isVar()) {
-        VERIFY(node->getName() == "p" || node->getName() == "q");
-        return (assignment & (node->getName() == "p" ? 1u : 2u)) != 0;
-    }
-    if (node->isNot()) return !truth(node->getChild(0), assignment);
-    if (node->isAnd() || node->isOr()) {
-        for (const auto& child : node->getChildren()) {
-            if (truth(child, assignment) != node->isAnd()) return node->isOr();
+    struct Frame { Node node; size_t next = 0; };
+    std::vector<Frame> stack = {{node}};
+    std::unordered_map<const DAGNode*, bool> values;
+    while (!stack.empty()) {
+        auto& frame = stack.back();
+        const Node current = frame.node;
+        VERIFY(current && current->getSort()->isBool());
+        if (values.count(current.get())) { stack.pop_back(); continue; }
+        if (current->isTrue() || current->isFalse()) {
+            values.emplace(current.get(), current->isTrue());
+            stack.pop_back();
+            continue;
         }
-        return node->isAnd();
-    }
-    VERIFY(node->isEq() || node->isDistinct());
-    VERIFY(node->getChildrenSize() >= 2);
-    for (size_t i = 0; i < node->getChildrenSize(); ++i) {
-        for (size_t j = i + 1; j < node->getChildrenSize(); ++j) {
-            const bool equal = truth(node->getChild(i), assignment) ==
-                               truth(node->getChild(j), assignment);
-            if (equal != node->isEq()) return false;
+        if (current->isVar()) {
+            VERIFY(current->getName() == "p" || current->getName() == "q");
+            values.emplace(current.get(),
+                (assignment & (current->getName() == "p" ? 1u : 2u)) != 0);
+            stack.pop_back();
+            continue;
         }
+        if (frame.next < current->getChildrenSize()) {
+            const Node child = current->getChild(frame.next++);
+            if (!values.count(child.get())) stack.push_back({child});
+            continue;
+        }
+        const auto childValue = [&](size_t index) {
+            return values.at(current->getChild(index).get());
+        };
+        bool result;
+        if (current->isNot()) {
+            VERIFY(current->getChildrenSize() == 1);
+            result = !childValue(0);
+        } else if (current->isAnd() || current->isOr()) {
+            result = current->isAnd();
+            for (size_t i = 0; i < current->getChildrenSize(); ++i) {
+                if (childValue(i) != current->isAnd()) {
+                    result = current->isOr();
+                    break;
+                }
+            }
+        } else {
+            VERIFY(current->isEq() || current->isDistinct());
+            VERIFY(current->getChildrenSize() >= 2);
+            result = true;
+            for (size_t i = 0; result && i < current->getChildrenSize(); ++i) {
+                for (size_t j = i + 1; j < current->getChildrenSize(); ++j) {
+                    if ((childValue(i) == childValue(j)) != current->isEq()) {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+        }
+        values.emplace(current.get(), result);
+        stack.pop_back();
     }
-    return true;
+    return values.at(node.get());
 }
 
 bool expectTruth(const Node& node, unsigned assignment, bool expected,
@@ -146,7 +180,7 @@ void testTruthTables() {
                         VERIFY(evaluated && evaluated->isCBool());
                         VERIFY(evaluated->isTrue() == expected);
                     }
-                    if (preserve && arity > 2) {
+                    if (preserve) {
                         expectOperands(built, operands, equality);
                         expectOperands(parsed, operands, equality);
                         expectOperands(again->getAssertions()[0], operands, equality);
@@ -227,6 +261,20 @@ void testOtherSorts() {
     }
 }
 
+void testConstantSortValidation() {
+    // Constant folding must not accept an ill-typed operand, including one
+    // after constants that already decide a Boolean relation's truth value.
+    for (bool preserve : {false, true}) {
+        for (const char* source : {"(= true false \"x\")", "(= true false #b1)",
+                                   "(distinct true false \"x\")",
+                                   "(distinct true false #b1)"}) {
+            auto parser = newParser();
+            configure(parser, preserve);
+            VERIFY(!parser->parseStr(std::string("(assert ") + source + ")"));
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -235,5 +283,6 @@ int main() {
     testLargeArity();
     testSimplification();
     testOtherSorts();
+    testConstantSortValidation();
     std::cout << "Boolean equality/distinct regression tests passed.\n";
 }

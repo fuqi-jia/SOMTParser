@@ -1,0 +1,12 @@
+<instance format="XCSP3" type="CSP">
+  <variables>
+    <array id="s" size="[4]"> 0..3 </array>
+  </variables>
+  <constraints>
+    <circuit> <list> s[] </list> </circuit>
+    <instantiation>
+      <list> s[] </list>
+      <values> 1 0 3 2 </values>
+    </instantiation>
+  </constraints>
+</instance>

@@ -1,0 +1,7 @@
+c qdimacs.md §2.3. A variable may not be quantified twice: the prefix would
+c disagree with itself about which block owns it, and the alternation depth
+c would not be well defined.
+p cnf 1 1
+e 1 0
+a 1 0
+1 0

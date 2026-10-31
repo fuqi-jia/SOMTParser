@@ -1,0 +1,27 @@
+(set-logic QF_NIA)
+
+(define-fun g1 () Int 100)
+
+(define-fun complex-sum ((x Int) (y Int) (z Int)) Int
+; let u1 = y * x, u2 = y * z in x * u1 + g1 + z * (u1 + u2)
+    (let ((u1 (* x y)) (u2 (* y z)))
+        (+ (* x u1) (+ g1 (* z (+ u1 u2))))
+    )
+)
+
+(define-system S
+    :input ((i1 Int) (i2 Int))
+    :output ((o Int))
+    :local ((l1 Int) (l2 Int))
+    :inv (= l1 (- i1 i2))
+    :init (and
+        (= l2 (complex-sum i1 i2 (- l1)))
+        (= o (* g1 l2))
+    )
+    :trans (let ((l3 (+ l1 l2)))
+        (and
+            (= l2' (complex-sum i1' i2 l3))
+            (= o' (complex-sum i1' i2' (- l3)))
+        )
+    )
+)

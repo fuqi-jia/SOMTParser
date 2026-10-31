@@ -1,0 +1,10 @@
+* The general format's six ASCII relational operators. The restricted
+* competition format permits only >= and =; everything else is normalised away
+* before publication, so a frontend claiming the general format needs all of
+* them -- and `!=` is a DISEQUALITY with no direct linear counterpart.
+1 x1 >= 1 ;
+1 x2 <= 1 ;
+1 x3 > 0 ;
+1 x4 < 1 ;
+1 x5 = 1 ;
+1 x6 != 1 ;

@@ -1,0 +1,4 @@
+<instance format="XCSP3" type="COP">
+  <variables><array id="x" size="[3]">0..2</array></variables>
+  <objectives><minimize type="sum">ne(x[0],x[1]) mul(x[1],x[2])</minimize></objectives>
+</instance>

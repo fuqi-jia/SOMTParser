@@ -1,0 +1,12 @@
+<instance format="XCSP3" type="CSP">
+  <variables>
+    <var id="x">-2 1 4</var>
+    <var id="y">-2 1 4</var>
+  </variables>
+  <constraints>
+    <extension>
+      <list>x y</list>
+      <supports>(-2,1)(-2,4)(1,-2)(1,4)(4,-2)(4,1)</supports>
+    </extension>
+  </constraints>
+</instance>

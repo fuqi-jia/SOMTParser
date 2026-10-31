@@ -1,0 +1,1 @@
+(define (problem p) (:domain numeric) (:init (= (y) 5)) (:goal (done)) )

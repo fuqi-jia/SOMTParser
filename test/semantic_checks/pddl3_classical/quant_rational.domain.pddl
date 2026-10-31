@@ -1,0 +1,6 @@
+(define (domain d) (:requirements :adl :preferences)
+(:types item vacant) (:constants a b - item)
+(:predicates (marked ?x - item))
+(:action mark :parameters (?x - item) :effect (marked ?x))
+(:action clear :parameters (?x - item) :effect (not (marked ?x)))
+)

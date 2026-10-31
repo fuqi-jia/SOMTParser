@@ -1,0 +1,11 @@
+<instance format="XCSP3" type="COP">
+  <variables>
+    <array id="x" size="[2][3]">
+      <domain for="x[0][0] x[0][2] x[1][1]">0..1</domain>
+    </array>
+  </variables>
+  <constraints>
+    <sum><list>x[0][0] x[0][2] x[1][1]</list><condition>(le,2)</condition></sum>
+  </constraints>
+  <objectives><maximize type="sum"><list>x[0][0] x[0][2] x[1][1]</list><coeffs>1 2 3</coeffs></maximize></objectives>
+</instance>

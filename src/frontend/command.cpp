@@ -19,6 +19,7 @@ const char* commandTypeName(CMD_TYPE type) noexcept {
     case CMD_TYPE::CT_DECLARE_SORT: return "declare-sort";
     case CMD_TYPE::CT_DECLARE_DATATYPES: return "declare-datatypes";
     case CMD_TYPE::CT_DECLARE_HEAP: return "declare-heap";
+    case CMD_TYPE::CT_DECLARE_CODATATYPES: return "declare-codatatypes";
     case CMD_TYPE::CT_DEFINE_FUN: return "define-fun";
     case CMD_TYPE::CT_DEFINE_FUN_REC: return "define-fun-rec";
     case CMD_TYPE::CT_DEFINE_FUNS_REC: return "define-funs-rec";

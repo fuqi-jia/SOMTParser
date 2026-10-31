@@ -1,0 +1,15 @@
+(set-logic QF_ABV)
+
+(define-system ArrayExample
+    :input ((A (Array (_ BitVec 8) (_ BitVec 8))))
+    :output ((out (_ BitVec 8)))
+    :init (= out #x00)
+    :trans (= out' (select A #b00000000))
+)
+
+(check-system ArrayExample
+    :input ((A (Array (_ BitVec 8) (_ BitVec 8))))
+    :output ((out (_ BitVec 8)))
+    :reachable (rch (= out #b00001010))
+    :query (q (rch))
+)

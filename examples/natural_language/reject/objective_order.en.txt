@@ -1,0 +1,4 @@
+Let x be an integer between 0 and 10.
+Let y be an integer between 0 and 10.
+Minimize x.
+Maximize y.

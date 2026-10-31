@@ -346,6 +346,7 @@ namespace SOMTParser{
         if (n >= objectives_.size()) return;
         // Remove entries from objective_map_ that correspond to objectives being popped
         for (size_t i = n; i < objectives_.size(); ++i) {
+            if (objectives_[i] == selected_gomt_objective_) selected_gomt_objective_.reset();
             for (auto it = objective_map_.begin(); it != objective_map_.end(); ) {
                 if (it->second == objectives_[i]) {
                     it = objective_map_.erase(it);
@@ -360,6 +361,57 @@ namespace SOMTParser{
     void ObjectiveManager::clear() {
         objectives_.clear();
         objective_map_.clear();
+        gomt_objectives_.clear();
+        gomt_soft_assertions_.clear();
+        selected_gomt_objective_.reset();
+    }
+
+    namespace {
+        std::string objectiveSymbol(const std::string& name) {
+            return name.size() >= 2 && name.front() == '|' && name.back() == '|'
+                ? name.substr(1, name.size() - 2) : name;
+        }
+    }
+
+    bool ObjectiveManager::hasGomtObjectives() const {
+        return !gomt_objectives_.empty();
+    }
+
+    void ObjectiveManager::registerGomtObjective(const std::string& name,
+                                                const std::shared_ptr<Objective>& obj) {
+        condAssert(obj != nullptr, "GOMT objective must not be null");
+        condAssert(gomt_objectives_.emplace(objectiveSymbol(name), obj).second,
+                   "GOMT objective is already defined: " + name);
+    }
+
+    std::shared_ptr<Objective> ObjectiveManager::getGomtObjective(const std::string& name) const {
+        const auto it = gomt_objectives_.find(objectiveSymbol(name));
+        return it == gomt_objectives_.end() ? nullptr : it->second;
+    }
+
+    void ObjectiveManager::addGomtSoftAssertion(const std::string& name,
+                                               const std::shared_ptr<DAGNode>& node,
+                                               const std::shared_ptr<DAGNode>& weight) {
+        const auto objective = getGomtObjective(name);
+        condAssert(objective && objective->isMaxSAT(), "unknown GOMT MaxSMT objective: " + name);
+        gomt_soft_assertions_[objectiveSymbol(name)].push_back({node, weight});
+    }
+
+    const std::vector<GomtSoftAssertion>& ObjectiveManager::getGomtSoftAssertions(const std::string& name) const {
+        static const std::vector<GomtSoftAssertion> empty;
+        const auto it = gomt_soft_assertions_.find(objectiveSymbol(name));
+        return it == gomt_soft_assertions_.end() ? empty : it->second;
+    }
+
+    void ObjectiveManager::selectGomtObjective(const std::string& name) {
+        const auto objective = getGomtObjective(name);
+        condAssert(objective != nullptr, "unknown GOMT objective: " + name);
+        selected_gomt_objective_ = objective;
+        objectives_.assign(1, objective);
+    }
+
+    std::shared_ptr<Objective> ObjectiveManager::getSelectedGomtObjective() const {
+        return selected_gomt_objective_;
     }
 
     std::shared_ptr<Objective> ObjectiveManager::createObjective(OPT_KIND opt_type, const std::string& grp_id) {

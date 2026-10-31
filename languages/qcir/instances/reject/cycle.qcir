@@ -1,0 +1,7 @@
+#QCIR-G14
+# qcir.md §4.4. A gate must be defined before it is used, which makes the
+# circuit acyclic -- for CONFORMING files. This one is not, and an unchecked
+# bottom-up walk would not terminate on it.
+output(g1)
+g1 = and(g2)
+g2 = and(g1)

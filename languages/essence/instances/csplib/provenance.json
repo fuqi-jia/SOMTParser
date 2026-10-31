@@ -1,0 +1,15 @@
+{
+  "path": "Problems/prob057/models/killer_sudoku.eprime",
+  "source_url": "https://raw.githubusercontent.com/csplib/csplib/c098b38a1598259aac69348468966db362f93844/Problems/prob057/models/killer_sudoku.eprime",
+  "git_blob_sha": "fd35c935484fa04cc14f78a566ff9c6e57fe16f9",
+  "sha256": "fe3c716425f75b2beb538cff0115fe770d353ca8d5c92711f93f22e4ffd392be",
+  "bytes": 3397,
+  "source_repository": "https://github.com/csplib/csplib",
+  "source_tree": "c098b38a1598259aac69348468966db362f93844",
+  "local_file": "killer_sudoku.eprime",
+  "license": "CC-BY-4.0, retained in the unchanged source",
+  "author": "Hakan Kjellerstrand",
+  "unmodified": true,
+  "corpus_kind": "published CSPLib application; complete standalone model",
+  "retrieval_date": "2026-10-11"
+}

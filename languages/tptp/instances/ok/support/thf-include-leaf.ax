@@ -1,0 +1,4 @@
+% Source positions below must remain positions in this file.
+thf(type_p,type,p:$o).
+thf('positive',axiom,p).
+thf(discard,axiom,$false).

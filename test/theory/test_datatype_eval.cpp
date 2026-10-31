@@ -120,20 +120,32 @@ int main() {
 
     // ─── Match expression tests ─────────────────────────────────────────
     {
-        auto e = parser->mkExpr("(match (left 42) ((left x) x) ((right y) y))");
+        // The same pattern name is local to each branch and is rebound after
+        // the first branch's scope has been popped.
+        auto e = parser->mkExpr("(match (left 42) (((left x) x) ((right x) x)))");
         VERIFY(e && !e->isErr());
         {
             std::string d = dumpSMTLIB2(e);
             VERIFY(d.find("NT_DT") == std::string::npos);
             // SMT-LIB: (match s ( (<pat> <body>) ... )) — nested parens, not flat match args
             VERIFY(d.find("((left") != std::string::npos);
+            auto roundtrip = parser->mkExpr(d);
+            VERIFY(roundtrip && !roundtrip->isErr());
+            VERIFY(dumpSMTLIB2(roundtrip) == d);
         }
         auto ev = parser->evaluate(e, model);
         std::cout << "  (match (left 42) ...) => " << parser->toString(ev) << "\n";
         VERIFY(ev && parser->toString(ev) == "42");
     }
     {
-        auto e = parser->mkExpr("(match (right 99) ((left x) x) ((right y) y))");
+        // Constructor and catch-all patterns share the standard outer case-list.
+        auto e = parser->mkExpr("(match (left 42) (((left x) x) (whole 0)))");
+        VERIFY(e && !e->isErr());
+        auto ev = parser->evaluate(e, model);
+        VERIFY(ev && parser->toString(ev) == "42");
+    }
+    {
+        auto e = parser->mkExpr("(match (right 99) (((left x) x) ((right y) y)))");
         VERIFY(e && !e->isErr());
         auto ev = parser->evaluate(e, model);
         std::cout << "  (match (right 99) ...) => " << parser->toString(ev) << "\n";
@@ -141,7 +153,7 @@ int main() {
     }
     {
         // match with arithmetic in body
-        auto e = parser->mkExpr("(match (left 5) ((left x) (+ x 10)) ((right y) (- y 1)))");
+        auto e = parser->mkExpr("(match (left 5) (((left x) (+ x 10)) ((right y) (- y 1))))");
         VERIFY(e && !e->isErr());
         auto ev = parser->evaluate(e, model);
         std::cout << "  (match (left 5) with +10) => " << parser->toString(ev) << "\n";
@@ -149,7 +161,7 @@ int main() {
     }
     {
         // match right branch with arithmetic
-        auto e = parser->mkExpr("(match (right 5) ((left x) (+ x 10)) ((right y) (- y 1)))");
+        auto e = parser->mkExpr("(match (right 5) (((left x) (+ x 10)) ((right y) (- y 1))))");
         VERIFY(e && !e->isErr());
         auto ev = parser->evaluate(e, model);
         std::cout << "  (match (right 5) with -1) => " << parser->toString(ev) << "\n";
@@ -157,7 +169,7 @@ int main() {
     }
     {
         // nested match: match result of a selector
-        auto e = parser->mkExpr("(match (left 7) ((left x) (= x 7)) ((right y) false))");
+        auto e = parser->mkExpr("(match (left 7) (((left x) (= x 7)) ((right y) false)))");
         VERIFY(e && !e->isErr());
         auto ev = parser->evaluate(e, model);
         std::cout << "  (match (left 7) eq check) => " << parser->toString(ev) << "\n";
@@ -165,6 +177,36 @@ int main() {
     }
 
     std::cout << "test_datatype_eval: match expression tests passed\n";
+
+    // The case list is required and all branches must return the same sort.
+    {
+        ParserPtr empty_cases = newParser();
+        VERIFY(!empty_cases->parseStr(R"(
+(set-logic ALL)
+(declare-datatypes ((Either 0)) (((left (lv Int)) (right (rv Int)))))
+(assert (match (left 1) ()))
+)"));
+    }
+    {
+        // Whitespace and comments between the case-list delimiters still form
+        // an empty (and therefore invalid) match.
+        ParserPtr comment_empty_cases = newParser();
+        VERIFY(!comment_empty_cases->parseStr(R"(
+(set-logic ALL)
+(declare-datatypes ((Either 0)) (((left (lv Int)) (right (rv Int)))))
+(assert (match (left 1) (
+  ; no match cases
+)))
+)"));
+    }
+    {
+        ParserPtr mixed_results = newParser();
+        VERIFY(!mixed_results->parseStr(R"(
+(set-logic ALL)
+(declare-datatypes ((Either 0)) (((left (lv Int)) (right (rv Int)))))
+(assert (match (left 1) (((left x) x) ((right y) true))))
+)"));
+    }
 
     // ─── Recursive DT tests ─────────────────────────────────────────────
     {
@@ -237,7 +279,7 @@ int main() {
         }
         // match on recursive DT
         {
-            auto e = p2->mkExpr("(match (cons 42 nil) ((cons h t) h) (nil 0))");
+            auto e = p2->mkExpr("(match (cons 42 nil) (((cons h t) h) (nil 0)))");
             VERIFY(e && !e->isErr());
             auto ev = p2->evaluate(e, m2);
             std::cout << "  (match (cons 42 nil) ...) => " << p2->toString(ev) << "\n";
@@ -245,7 +287,7 @@ int main() {
         }
         // match nil case
         {
-            auto e = p2->mkExpr("(match nil ((cons h t) h) (nil 0))");
+            auto e = p2->mkExpr("(match nil (((cons h t) h) (nil 0)))");
             VERIFY(e && !e->isErr());
             auto ev = p2->evaluate(e, m2);
             std::cout << "  (match nil ...) => " << p2->toString(ev) << "\n";

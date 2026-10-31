@@ -1,0 +1,5 @@
+% Included by tff_include.p: carries the whole typing environment.
+tff(fruit_type, type, fruit: $tType).
+tff(apple_type, type, apple: fruit).
+tff(eats_type, type, eats: (fruit * fruit) > $o).
+tff(ax, axiom, ![X: fruit]: eats(X, apple)).

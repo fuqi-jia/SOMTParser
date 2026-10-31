@@ -1,0 +1,4 @@
+interface:
+  display_name: "SOMTParser NL to SMT-LIB"
+  short_description: "Translate via HIR, direct SMT-LIB, or a hybrid model"
+  default_prompt: "Use $somtparser-nl-smtlib to translate this problem through the selected route into SMT/OMT without running a solver."

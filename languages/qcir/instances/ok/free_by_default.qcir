@@ -1,0 +1,6 @@
+#QCIR-G14
+# qcir.md §4.1. `a` and `b` are quantified nowhere and named in no free block.
+# QCIR leaves them free; QDIMACS implicitly binds unquantified matrix variables
+# in an outermost existential block. Both inputs are legal.
+output(g1)
+g1 = and(a, b)

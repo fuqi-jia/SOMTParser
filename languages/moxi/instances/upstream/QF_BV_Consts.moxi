@@ -1,0 +1,18 @@
+(set-logic QF_BV)
+
+(declare-const INPUT (_ BitVec 8))
+
+(define-system Cnt 
+    :input ((in (_ BitVec 8)))
+    :output ((out (_ BitVec 8)))
+    :init (= out #b00000001)
+    :trans (= out' (bvadd out (bvsmod in #b00000011)))
+)
+
+(check-system Cnt
+    :input ((i (_ BitVec 8)))
+    :output ((o (_ BitVec 8)))
+    :assumption (a (= i INPUT))
+    :reachable (rch (= o #b00001010))
+    :query (q (a rch))
+)

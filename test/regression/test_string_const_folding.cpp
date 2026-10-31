@@ -1,9 +1,14 @@
 // String operators applied to STRING CONSTANTS.
 //
-// Constant folding in simp_oper only fires when an argument IS a constant, so
-// a test that exercises an operator over a declared variable never reaches it.
-// Four defects lived in that gap, and all four are about a string constant
-// having two spellings:
+// `test/lowering/test_lift_operator_sweep.cpp` covers every string operator
+// already, and covered all three of the ones below while they were broken. It
+// exercises each operator over a declared VARIABLE -- `(str.to_int t)` with `t`
+// a String -- which is the right shape for a lift-and-lower round trip and
+// reaches none of `simp_oper`'s constant folding. Folding only fires on a
+// constant, so the sweep and the folder are disjoint by construction, and a
+// whole class of defect sits in the gap.
+//
+// Three of them did, and an upstream corpus is what found them:
 //
 //   * `str.to_int` and `str.to_code` RAISED AN ERROR for an argument the
 //     standard gives a value. Both are total in SMT-LIB -- a string that is not
@@ -11,27 +16,15 @@
 //     -- so `(str.to_int "abc")` is a well-formed term, and erroring turned a
 //     legal script into a parse failure.
 //
-//   * `str.to_int`, `str.to_code`, `str.is_digit` and `str.rev` read
-//     `toString()`, which renders a string constant WITH its quotes. So the
-//     is-it-digits test saw `"7"` rather than `7`, and `"a"` was three
-//     characters long: no literal ever reached the folding branch, including
+//   * All three read `toString()`, which renders a string constant WITH its
+//     quotes. So the digit test saw `"7"` rather than `7`, and `"a"` was three
+//     characters long. Every literal took the error branch, including
 //     `(str.to_int "7")`. `getStringLiteral()` is the accessor for the value,
-//     and the NT_STR_LEN case beside them was already using it.
+//     and `str.len` two cases above was already using it.
 //
-//   * `str.is_digit` was sharing `str.to_int`'s test, so a run of digits
-//     satisfied it and `(str.is_digit "77")` folded to true.
-//
-//   * `mkConstStr` stored a quoted argument with its quotes and an unquoted one
-//     without. Nodes are hash-consed by name, so a constant built through the
-//     API and the identical literal read from a script were never the same node
-//     and `(= (str.from_int 7) "7")` folded to FALSE. Both PRINT as `"7"`,
-//     because printing adds the quotes when they are missing, so it was
-//     invisible in the output and showed up only as an equality that would not
-//     hold.
-//
-// The assertions are on the VALUE rather than on acceptance: each expression is
+// The assertions here are on the VALUE, not on acceptance: each expression is
 // folded and compared against what the standard says it equals, so a folder
-// that returns the wrong number fails rather than one that merely returns.
+// that returns the wrong number fails rather than a folder that merely returns.
 
 #include "somtparser/frontend/parser.h"
 
@@ -44,8 +37,8 @@ using namespace SOMTParser;
 
 namespace {
 
-/** Parse `(assert <e>)` and report whether it folded to `true`. A fully folded
- *  true is the only outcome that means "the value is what the standard says". */
+/** Parse `(assert <e>)` and report what it folded to. A fully folded true is
+ *  the only outcome that means "the value is what the standard says". */
 bool foldsTrue(const std::string& e) {
     ParserPtr p = newParser();
     if (!p->parseStr("(assert " + e + ")\n(check-sat)\n")) { return false; }
@@ -60,8 +53,8 @@ int main() {
 
     // ---- str.to_int: total, and -1 is a value rather than an error. ---------
     VERIFY(foldsTrue("(= (str.to_int \"7\") 7)"));
-    // Leading zeroes are digits, so "0007" is 7 -- not -1, which is what a
-    // reader that rejected the spelling would give.
+    // Leading zeroes are digits. "0007" is a run of digits, so it is 7 -- not
+    // -1, which is what a reader that rejected the spelling would give.
     VERIFY(foldsTrue("(= (str.to_int \"0007\") 7)"));
     VERIFY(foldsTrue("(= (str.to_int \"abc\") (- 1))"));
     VERIFY(foldsTrue("(= (str.to_int \"\") (- 1))"));
@@ -76,20 +69,23 @@ int main() {
     VERIFY(foldsTrue("(= (str.to_code \"\") (- 1))"));
 
     // ---- str.is_digit: ONE digit character. --------------------------------
+    //
+    // Not `str.to_int`'s test with a different name: a run of digits is not a
+    // digit. The two were sharing an implementation, which is how `"77"` came
+    // back true.
     VERIFY(foldsTrue("(str.is_digit \"7\")"));
     VERIFY(foldsTrue("(not (str.is_digit \"77\"))"));
     VERIFY(foldsTrue("(not (str.is_digit \"a\"))"));
     VERIFY(foldsTrue("(not (str.is_digit \"\"))"));
 
-    // ---- One canonical spelling for a constant. -----------------------------
-    //
-    // The two sides of each equality reach mkConstStr by different routes: one
-    // from an operator that built the value, one from the parser reading a
-    // literal. They must be the same node.
-    VERIFY(foldsTrue("(= (str.from_int 7) \"7\")"));
-    VERIFY(foldsTrue("(= (str.rev \"abc\") \"cba\")"));
-    VERIFY(foldsTrue("(= (str.++ \"ab\" \"c\") \"abc\")"));
+    // ---- The neighbours, so the fix is not narrower than the class. --------
     VERIFY(foldsTrue("(= (str.len \"abc\") 3)"));
+    VERIFY(foldsTrue("(= (str.++ \"ab\" \"c\") \"abc\")"));
+    VERIFY(foldsTrue("(= (str.from_int 7) \"7\")"));
+    // str.rev read the quoted rendering too, so it reversed the quotes along
+    // with the characters and produced a string that was not the reverse of
+    // anything.
+    VERIFY(foldsTrue("(= (str.rev \"abc\") \"cba\")"));
 
     std::cout << "All string constant-folding tests passed." << std::endl;
     return 0;

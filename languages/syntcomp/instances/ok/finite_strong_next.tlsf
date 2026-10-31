@@ -1,0 +1,2 @@
+INFO { TITLE: "strong next requires another position" SEMANTICS: Finite,Mealy TARGET: Mealy }
+MAIN { INPUTS { } OUTPUTS { } GUARANTEES { X[!] true; } }

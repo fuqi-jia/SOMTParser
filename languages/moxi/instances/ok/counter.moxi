@@ -1,0 +1,12 @@
+(define-system counter
+  :input  ((tick Bool))
+  :output ((n Int))
+  :init   (= n 0)
+  :trans  (= n' (ite tick (+ n 1) n))
+  :inv    (>= n 0))
+
+(check-system counter
+  :input  ((tick Bool))
+  :output ((n Int))
+  :reachable (bad (not (< n 10)))
+  :query (q1 (bad)))

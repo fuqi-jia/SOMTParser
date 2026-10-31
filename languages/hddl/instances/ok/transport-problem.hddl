@@ -1,0 +1,8 @@
+(define (problem transport-one-hop)
+  (:domain transport)
+  (:objects truck1 - truck l1 l2 - location)
+  (:htn
+    :ordered-subtasks (and
+      (deliver truck1 l2)))
+  (:init (at truck1 l1) (road l1 l2))
+  (:goal (at truck1 l2)))

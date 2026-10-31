@@ -1,0 +1,4 @@
+* opb-wbo.md's second obligation: `~x` is (1 - x), NOT a separate variable.
+* These terms are Int-valued 0/1 summed arithmetically, so the complement is
+* arithmetic too -- a Boolean negation would not be summable.
+1 ~x1 +1 x2 >= 1 ;

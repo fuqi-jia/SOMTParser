@@ -57,6 +57,36 @@ int main() {
     }
 
     {
+        VERIFY(parser->parseStr("(declare-const symbolic_fp_bits (_ BitVec 32))"));
+        const std::string term = "(fp ((_ extract 31 31) symbolic_fp_bits) "
+            "((_ extract 30 23) symbolic_fp_bits) ((_ extract 22 0) symbolic_fp_bits))";
+        auto symbolic = parser->mkExpr(term);
+        VERIFY(symbolic && !symbolic->isErr());
+        VERIFY(!FloatingPointUtils::fpNodeToValue(symbolic).has_value());
+        VERIFY(!symbolic->getValue());
+        for (const auto& expression : {"(= " + term + " (_ +zero 8 24))",
+                                      "(fp.eq " + term + " (_ +zero 8 24))",
+                                      "(distinct " + term + " (_ +zero 8 24))",
+                                      "(fp.isZero " + term + ")", "(fp.isNormal " + term + ")",
+                                      "(fp.isSubnormal " + term + ")", "(fp.isInfinite " + term + ")",
+                                      "(fp.isNaN " + term + ")", "(fp.isNegative " + term + ")",
+                                      "(fp.isPositive " + term + ")"}) {
+            auto predicate = parser->mkExpr(expression);
+            VERIFY(predicate && !predicate->isErr());
+            VERIFY(!predicate->isTrue() && !predicate->isFalse());
+            auto evaluated = parser->evaluate(predicate, newModel());
+            VERIFY(evaluated && !evaluated->isTrue() && !evaluated->isFalse());
+        }
+        // A partly symbolic constructor is not a literal either.
+        auto partial = parser->mkExpr("(fp #b0 #b00000000 ((_ extract 22 0) symbolic_fp_bits))");
+        VERIFY(partial && !FloatingPointUtils::fpNodeToValue(partial).has_value());
+        // Hash-consed shared uses retain the same symbolic constructor.
+        auto again = parser->mkExpr(term);
+        VERIFY(again == symbolic);
+        VERIFY(!FloatingPointUtils::fpNodeToValue(again).has_value());
+    }
+
+    {
         float x = 1.375f;
         std::string smt = float32ToSMTFP(x);
         auto n = parser->mkExpr(smt);

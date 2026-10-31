@@ -1,0 +1,7 @@
+c wcnf.md §2.1, the 2022 format. No problem line: "The p-line is a source of
+c many problems when constructing benchmark files", so the variable count is
+c discovered from the clauses. Hard clauses are declared by `h`.
+h 1 2 3 4 0
+1 -3 -5 6 7 0
+6 -1 -2 0
+4 1 6 -7 0

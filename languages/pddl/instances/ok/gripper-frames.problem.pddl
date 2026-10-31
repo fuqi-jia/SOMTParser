@@ -1,0 +1,5 @@
+(define (problem gripper-frames)
+  (:domain gripper)
+  (:objects ball1 ball2)
+  (:init (at ball1) (at ball2))
+  (:goal (and)))

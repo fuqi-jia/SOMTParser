@@ -1,0 +1,5 @@
+(define (problem typed)
+  (:domain t)
+  (:objects b1 - ball t1 - table)
+  (:init (at b1))
+  (:goal (not (at b1))))

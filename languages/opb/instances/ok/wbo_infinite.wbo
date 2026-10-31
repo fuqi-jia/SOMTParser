@@ -1,0 +1,3 @@
+* `soft: ;` means T = infinity: no threshold at all.
+soft: ;
+[7] 1 x1 >= 1 ;

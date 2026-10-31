@@ -27,12 +27,56 @@
 
 #include "somtparser/frontend/parser.h"
 #include "somtparser/core/timing.h"
+#include <algorithm>
 #include <queue>
 #include <stack>
 #include "somtparser/core/util.h"
 #include "somtparser/ir/value.h"
+#include <unordered_set>
 
 namespace {
+    // A bare nullary constructor of a parametric datatype has no arguments
+    // from which to infer its instance. Equality/distinct/ite can supply it
+    // from a sibling. Never retag an explicitly instantiated constructor, and
+    // never mutate the generic node shared by later occurrences.
+    std::shared_ptr<SOMTParser::DAGNode> specializeNullary(
+            SOMTParser::Parser& parser, const std::shared_ptr<SOMTParser::DAGNode>& term,
+            const std::shared_ptr<SOMTParser::Sort>& expected) {
+        if (!term || !term->isConstructorApp() || term->getChildrenSize() != 0) { return term; }
+        const auto& got = term->getSort();
+        if (!got || !expected || !got->isDatatype() || !expected->isDatatype()
+            || got->arity == 0 || !got->children.empty()
+            || got->name != expected->name || got->arity != expected->arity
+            || expected->children.size() != expected->arity) { return term; }
+        const auto* ctor = expected->getDtConstructorByName(term->getName());
+        if (!ctor || !ctor->selectors.empty()) { return term; }
+        return parser.getNodeManager()->createNode(expected, SOMTParser::NODE_KIND::NT_DT_CONSTRUCTOR,
+                                                   term->getName(), {});
+    }
+
+    bool inferNullaryOperands(SOMTParser::Parser& parser,
+            const std::vector<std::shared_ptr<SOMTParser::DAGNode>>& params,
+            std::vector<std::shared_ptr<SOMTParser::DAGNode>>& specialized) {
+        std::shared_ptr<SOMTParser::Sort> instance;
+        bool unresolved = false;
+        for (const auto& term : params) {
+            if (!term || !term->getSort() || !term->getSort()->isDatatype()) { continue; }
+            const auto& sort = term->getSort();
+            if (sort->arity && sort->children.size() == sort->arity) { instance = sort; }
+            if (sort->arity && sort->children.empty() && term->isConstructorApp()
+                && term->getChildrenSize() == 0) { unresolved = true; }
+        }
+        if (!unresolved || !instance) { return false; }
+        bool changed = false;
+        specialized.reserve(params.size());
+        for (const auto& term : params) {
+            auto value = specializeNullary(parser, term, instance);
+            changed = changed || value != term;
+            specialized.push_back(std::move(value));
+        }
+        return changed;
+    }
+
     bool compareByHash(const std::pair<std::shared_ptr<SOMTParser::DAGNode>, size_t>& a,
                        const std::pair<std::shared_ptr<SOMTParser::DAGNode>, size_t>& b) {
         return a.second < b.second;
@@ -336,6 +380,16 @@ namespace SOMTParser{
         children.insert(children.begin(), NodeManager::NULL_NODE);
         std::shared_ptr<DAGNode> func = getNodeManager()->createNode(out_sort, NODE_KIND::NT_FUNC_DEC, name, children);
         getSymbolManager()->registerFun(name, func);
+        // Recording the declaration ORDER is part of declaring the function,
+        // for the same reason registering the symbol is part of declaring a
+        // sort (mkSortDec above). dumpSMT2() walks getFunctionNames(), and the
+        // (declare-fun ...) command path called this separately
+        // (src/frontend/base_parser.cpp:1198) while this builder did not -- so
+        // an uninterpreted function declared through the API could be applied
+        // in a term, printed inside that term, and never declared in the dump.
+        // addFunctionName is idempotent, so the command path's own call is now
+        // a no-op rather than a duplicate.
+        getSymbolManager()->addFunctionName(name);
         return func;
     }
 
@@ -361,6 +415,12 @@ namespace SOMTParser{
         }
         func = getNodeManager()->createNode(out_sort, NODE_KIND::NT_FUNC_DEF, name, children);
         getSymbolManager()->registerFun(name, func);
+        // Same two-step as mkFuncDec: registering the symbol makes the
+        // function resolvable, recording the name makes it DUMPABLE. The
+        // command path did both; this builder did only the first, so a
+        // function defined through the API was callable and invisible in the
+        // script. addFunctionName is idempotent.
+        getSymbolManager()->addFunctionName(name);
         return func;
     }
 
@@ -397,7 +457,94 @@ namespace SOMTParser{
         }
         auto func = getNodeManager()->createNode(out_sort, NODE_KIND::NT_FUNC_REC, name, children);
         getSymbolManager()->registerRecursiveDefinition(symbol, func);
+        getSymbolManager()->addFunctionName(name);
         return func;
+    }
+
+    bool Parser::mkFuncRecGroup(const std::vector<std::string>& names) {
+        if (names.empty()) {
+            err_all(ERROR_TYPE::ERR_LOGIC,
+                    "define-funs-rec group must not be empty", line_number);
+            return false;
+        }
+        std::unordered_set<std::string> members;
+        members.reserve(names.size());
+        std::vector<std::shared_ptr<DAGNode>> functions;
+        functions.reserve(names.size());
+        for (const auto& name : names) {
+            if (name.empty() || !members.insert(name).second) {
+                err_all(ERROR_TYPE::ERR_LOGIC,
+                        "define-funs-rec group has an empty or duplicate name", line_number);
+                return false;
+            }
+            auto function = getSymbolManager()->getFun(name);
+            if (!function || function->getKind() != NODE_KIND::NT_FUNC_REC
+                || getSymbolManager()->getRecFunGroup(name) != nullptr) {
+                err_all(ERROR_TYPE::ERR_LOGIC,
+                        "define-funs-rec group members must be ungrouped recursive definitions",
+                        line_number);
+                return false;
+            }
+            functions.push_back(std::move(function));
+        }
+
+        // Refuse to label unrelated recursive definitions as one group. The
+        // group is an SCC in the function-call graph, matching the parser's
+        // `define-funs-rec` binding scope rather than merely its dump format.
+        std::unordered_map<std::string, std::unordered_set<std::string>> edges;
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            std::unordered_set<const DAGNode*> seen;
+            std::vector<std::shared_ptr<DAGNode>> pending{functions[i]};
+            while (!pending.empty()) {
+                auto node = std::move(pending.back());
+                pending.pop_back();
+                if (!node || !seen.insert(node.get()).second) continue;
+                const auto kind = node->getKind();
+                // HIR builds calls against upfront declarations through
+                // mkApplyUF; textual parsing also uses the two function-call
+                // node kinds. All three denote edges in the same call graph.
+                if ((kind == NODE_KIND::NT_UF_APPLY
+                     || kind == NODE_KIND::NT_FUNC_APPLY
+                     || kind == NODE_KIND::NT_FUNC_REC_APPLY)
+                    && members.find(node->getName()) != members.end()) {
+                    edges[names[i]].insert(node->getName());
+                }
+                for (const auto& child : node->getChildren()) {
+                    if (child) pending.push_back(child);
+                }
+            }
+        }
+        for (const auto& start : names) {
+            if (names.size() == 1) {
+                const auto self = edges.find(start);
+                if (self == edges.end() || self->second.find(start) == self->second.end()) {
+                    err_all(ERROR_TYPE::ERR_LOGIC,
+                            "singleton define-funs-rec group must be self-recursive",
+                            line_number);
+                    return false;
+                }
+                continue;
+            }
+            std::unordered_set<std::string> reached;
+            std::vector<std::string> pending{start};
+            while (!pending.empty()) {
+                std::string current = std::move(pending.back());
+                pending.pop_back();
+                if (!reached.insert(current).second) continue;
+                const auto next = edges.find(current);
+                if (next != edges.end()) {
+                    for (const auto& target : next->second) pending.push_back(target);
+                }
+            }
+            if (reached.size() != names.size()) {
+                err_all(ERROR_TYPE::ERR_LOGIC,
+                        "define-funs-rec members must form one recursive call component",
+                        line_number);
+                return false;
+            }
+        }
+        getSymbolManager()->addRecFunGroup(names);
+        return true;
     }
 
     std::shared_ptr<Sort> Parser::mkSortDec(const std::string &name, const size_t &arity){
@@ -486,6 +633,8 @@ namespace SOMTParser{
     (= A A+ :chainable), return Bool
     */
     std::shared_ptr<DAGNode> Parser::mkEq(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r){
+        l = specializeNullary(*this, l, r->getSort());
+        r = specializeNullary(*this, r, l->getSort());
         if(!l->getSort()->isEqTo(r->getSort())) {
             if(canExempt(l->getSort(), r->getSort())){
                 // std::cerr << "Type mismatch in eq, but now exempt for int/real"<<std::endl;
@@ -495,7 +644,12 @@ namespace SOMTParser{
                 return mkUnknown();
             }
         }
-        
+
+        // Preserve syntax only after ordinary operand type validation.
+        // The specialized Boolean reductions below otherwise bypass mkOper.
+        if (getOptions()->shouldPreserveOperator(NODE_KIND::NT_EQ)) {
+            return mkInternalOper(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, {l, r});
+        }
         if(l->isTrue() && r->isTrue()){
             return mkTrue();
         }
@@ -531,18 +685,24 @@ namespace SOMTParser{
         }
     }
     std::shared_ptr<DAGNode> Parser::mkEq(const std::vector<std::shared_ptr<DAGNode>> &params){
+        std::vector<std::shared_ptr<DAGNode>> specialized;
+        if (inferNullaryOperands(*this, params, specialized)) { return mkEq(specialized); }
         if(params.size() < 2) {
             err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for equality", line_number);
             return mkUnknown();
         }
+        std::shared_ptr<Sort> sort = getSort(params);
+
+        // Inference omits non-arithmetic constants. They still have concrete
+        // sorts: use one to validate the entire relation before simplifying.
+        if (!sort) { sort = params[0]->getSort(); }
+
         if(params.size() == 2){
             return mkEq(params[0], params[1]);
         }
 
-        const auto sort = getSort(params);
-        bool all_boolean = true;
-        bool has_true = false;
-        bool has_false = false;
+        std::vector<std::shared_ptr<DAGNode>> new_params;
+
         for(size_t i=0;i<params.size();i++){
             if(sort != nullptr && !params[i]->getSort()->isEqTo(sort)) {
                 if(canExempt(params[i]->getSort(), sort)){
@@ -553,31 +713,38 @@ namespace SOMTParser{
                     return mkUnknown();
                 }
             }
-            all_boolean &= isBoolParam(params[i]);
-            has_true |= params[i]->isTrue();
-            has_false |= params[i]->isFalse();
+            new_params.emplace_back(params[i]);
         }
 
-        if(all_boolean && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_EQ)){
-            // Equality with true requires ALL operands to be true, not merely
-            // equal to each other. Equality with false requires all to be false.
-            // mkAnd/mkOr retain these constraints while folding constants.
-            if(has_true) return mkAnd(params);
-            if(has_false) return mkNot(mkOr(params));
+        // A true operand is a value in the equality relation, not an identity
+        // element: (= true p q) requires both p and q, not merely p = q.
+        if (sort && sort->isBool()
+                && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_EQ)) {
+            bool has_true = false, has_false = false;
+            std::vector<std::shared_ptr<DAGNode>> remaining;
+            remaining.reserve(new_params.size());
+            for (const auto& param : new_params) {
+                if (param->isTrue()) { has_true = true; }
+                else if (param->isFalse()) { has_false = true; }
+                else { remaining.push_back(param); }
+            }
+            // Every operand was type checked above, including operands after
+            // opposing constants. Preserve all symbolic terms in the fold.
+            if (has_true && has_false) { return mkFalse(); }
+            if (has_true) { return mkAnd(remaining); }
+            if (has_false) { return mkNot(mkOr(remaining)); }
         }
-
-        if(params.size() > 100){
-            // Avoid sorting large operand lists.
-            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, "eq", params);
+        if(new_params.size() > 100){
+            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, "eq", new_params);
         }
-        else{
-            return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, params);
-        }
+        return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_EQ, new_params);
     }
     /*
     (distinct A A+ :std::pairwise), return Bool
     */
     std::shared_ptr<DAGNode> Parser::mkDistinct(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r){
+        l = specializeNullary(*this, l, r->getSort());
+        r = specializeNullary(*this, r, l->getSort());
         if(!l->getSort()->isEqTo(r->getSort())) {
             if(canExempt(l->getSort(), r->getSort())){
                 // std::cerr << "Type mismatch in distinct, but now exempt for int/real"<<std::endl;
@@ -589,6 +756,9 @@ namespace SOMTParser{
             }
         }
 
+        if (getOptions()->shouldPreserveOperator(NODE_KIND::NT_DISTINCT)) {
+            return mkInternalOper(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, {l, r});
+        }
         if(l->isTrue() && r->isTrue()){
             return mkFalse();
         }
@@ -630,13 +800,23 @@ namespace SOMTParser{
         }
     }
     std::shared_ptr<DAGNode> Parser::mkDistinct(const std::vector<std::shared_ptr<DAGNode>> &params){
+        std::vector<std::shared_ptr<DAGNode>> specialized;
+        if (inferNullaryOperands(*this, params, specialized)) { return mkDistinct(specialized); }
         if(params.size() < 2) {
             err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for distinct", line_number);
             return mkUnknown();
         }
+        if(params.size() == 2){
+            return mkDistinct(params[0], params[1]);
+        }
         std::shared_ptr<Sort> sort = getSort(params);
 
-        bool all_boolean = true;
+        // Do not skip type checking for an all-constant relation, even when a
+        // Boolean pigeonhole reduction below would otherwise return false.
+        if (!sort) { sort = params[0]->getSort(); }
+
+        std::vector<std::shared_ptr<DAGNode>> new_params;
+
         for(size_t i=0;i<params.size();i++){
             if(params[i]->isErr()) return params[i];
             if(sort != nullptr && !params[i]->getSort()->isEqTo(sort)) {
@@ -648,27 +828,19 @@ namespace SOMTParser{
                     return mkUnknown();
                 }
             }
-            all_boolean &= isBoolParam(params[i]);
+            new_params.emplace_back(params[i]);
         }
 
-        if(all_boolean && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_DISTINCT)){
-            // Bool has only two values: three or more operands cannot all be
-            // distinct. For two operands, keep the safe constant reductions
-            // (distinct false p) -> p and (distinct true p) -> (not p).
-            if(params.size() > 2) return mkFalse();
-            if(params[0]->isCBool() || params[1]->isCBool()){
-                return mkDistinct(params[0], params[1]);
-            }
+        // More than two Boolean values cannot be pairwise distinct. Validate
+        // all operand sorts first, and never drop a false operand from a list.
+        if (params[0]->getSort()->isBool()
+                && !getOptions()->shouldPreserveOperator(NODE_KIND::NT_DISTINCT)) {
+            return mkFalse();
         }
-
-        if(params.size() > 100) {
-            // Avoid sorting large operand lists.
-            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, "distinct", params);
+        if(new_params.size() > 100) {
+            return getNodeManager()->createNode(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, "distinct", new_params);
         }
-        else{
-            return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, params);
-        }
-
+        return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_DISTINCT, new_params);
     }
     // CONST
     // defined in base_parser.cpp
@@ -721,8 +893,10 @@ namespace SOMTParser{
     }
 
     std::shared_ptr<DAGNode> Parser::mkLetBindVarList(const std::vector<std::shared_ptr<DAGNode>>& bind_vars){
-        // empty is allowed
-        
+        // A let group is nonempty; return a diagnostic node instead of
+        // indexing an empty vector if an internal caller supplies no bindings.
+        if (bind_vars.empty()) return mkErr(ERROR_TYPE::ERR_PARAM_MIS);
+
         // Use the sort of the first binding variable for the list
         std::shared_ptr<Sort> list_sort = bind_vars[0]->getSort();
         return getNodeManager()->createNode(list_sort, NODE_KIND::NT_LET_BIND_VAR_LIST, "", bind_vars);
@@ -791,21 +965,22 @@ namespace SOMTParser{
     /** A string constant, stored in ONE canonical form.
      *
      *  Nodes are hash-consed by name, so two spellings of the same value are
-     *  two different nodes and an equality between them folds to FALSE. This
-     *  function stored a quoted argument with its quotes and an unquoted
-     *  argument without, so a constant built through the API and the identical
-     *  literal read from a script were never the same node:
+     *  two different nodes and `(= a b)` between them folds to FALSE. This
+     *  function used to store a quoted argument with its quotes and an
+     *  unquoted argument without, so a constant built by the API and the
+     *  identical literal read from a script were never the same node:
      *
      *      (= (str.from_int 7) "7")     folded to false
      *
-     *  -- str.from_int calls this with `7` and the parser calls it with `"7"`.
-     *  Both PRINT as `"7"`, because printing adds the quotes when they are
-     *  missing, so the disagreement was invisible in the output and showed up
-     *  only as an equality that would not hold.
+     *  -- `str.from_int` calls this with `7` and the parser calls it with
+     *  `"7"`. Both PRINT as `"7"`, because printing adds the quotes when they
+     *  are missing, so the disagreement was invisible in the output and showed
+     *  up only as an equality that would not hold.
      *
-     *  The two spellings denote the same value, so exactly one of them may be
-     *  the stored form. Quoted is chosen because it is what the parser produces
-     *  and what getStringLiteral() already strips. */
+     *  This is the identity defect PR #52 fixed for symbols, one sort along:
+     *  the two spellings denote the same value, so exactly one of them may be
+     *  the stored form. Quoted is chosen because it is what the parser
+     *  produces and what getStringLiteral() already strips. */
     std::shared_ptr<DAGNode> Parser::mkConstStr(const std::string &v){
         std::string raw = v;
         if (v.length() >= 2 && v[0] == '"' && v[v.length()-1] == '"') {
@@ -866,11 +1041,17 @@ namespace SOMTParser{
     
     // VAR
     std::shared_ptr<DAGNode> Parser::mkTempVar(const std::shared_ptr<Sort>& sort){
-        std::string temp_var_name = "temp_" + std::to_string(getSymbolManager()->nextTempVarCounter());
-        if(getSymbolManager()->getTempVar(temp_var_name)){
-            err_all(ERROR_TYPE::ERR_PARAM_MIS, "Temp variable name already exists", line_number);
-            return mkUnknown();
-        }
+        std::string temp_var_name;
+        do {
+            temp_var_name = "temp_" + std::to_string(getSymbolManager()->nextTempVarCounter());
+        } while (getSymbolManager()->hasTempVar(temp_var_name)
+                 || getSymbolManager()->hasVar(temp_var_name)
+                 || getSymbolManager()->hasFunctionName(temp_var_name)
+                 || getSymbolManager()->hasFun(temp_var_name)
+                 || getSymbolManager()->hasFunVar(temp_var_name)
+                 || getSymbolManager()->hasQuantVar(temp_var_name)
+                 || getSymbolManager()->hasLet(temp_var_name)
+                 || getSymbolManager()->hasPlaceholderVar(temp_var_name));
         std::shared_ptr<DAGNode> newvar = getNodeManager()->createNode(sort, NODE_KIND::NT_TEMP_VAR, temp_var_name);
         getSymbolManager()->registerTempVar(temp_var_name, newvar);
         return newvar;
@@ -1239,6 +1420,8 @@ namespace SOMTParser{
         if(cond->isErr()) return cond;
         if(l->isErr()) return l;
         if(r->isErr()) return r;
+        l = specializeNullary(*this, l, r->getSort());
+        r = specializeNullary(*this, r, l->getSort());
         return mkOper(l->getSort(), NODE_KIND::NT_ITE, cond, l, r);
     }
     std::shared_ptr<DAGNode> Parser::mkIte(const std::vector<std::shared_ptr<DAGNode>> &params){
@@ -1293,11 +1476,13 @@ namespace SOMTParser{
 
         // checking
         if(new_params.size() == 0){
-            // all 0 constant
-            if(getOptions()->isRealTheory()){
+            // All operands are zero. Their inferred sort remains authoritative
+            // after simplification, including API models under ALL and mixed
+            // logics; the logic name does not determine this term's sort.
+            if(sort != nullptr && sort->isReal()){
                 return mkConstReal(0.0);
             }
-            else if(getOptions()->isIntTheory()){
+            else if(sort != nullptr && sort->isInt()){
                 return mkConstInt(0);
             }
             else{
@@ -1385,10 +1570,14 @@ namespace SOMTParser{
 
         if(new_params.size() == 0){
             // all 1 constant
-            if(getOptions()->isIntTheory()){
+            // The operands already determined the result sort. Looking at the
+            // active logic is wrong under `ALL`/mixed logics and used to turn
+            // the ordinary Int term `(* 1 1)` into a type error. This is the
+            // multiplicative counterpart of the zero case above.
+            if(sort != nullptr && sort->isInt()){
                 return mkConstInt(1);
             }
-            else if(getOptions()->isRealTheory()){
+            else if(sort != nullptr && sort->isReal()){
                 return mkConstReal(1.0);
             }
             else{
@@ -3976,6 +4165,140 @@ namespace SOMTParser{
     /*
     (select a i): a has sort (Array IndexSort ElemSort), i must have IndexSort, result is ElemSort.
     */
+    std::shared_ptr<Sort> Parser::mkSetSort(std::shared_ptr<Sort> elem){
+        std::string key = "SET_" + elem->toString();
+        auto sort = getSymbolManager()->resolveSort(key);
+        if(!sort){
+            sort = getSortManager()->createSetSort(elem);
+            getSymbolManager()->registerSort(key, sort);
+        }
+        return sort;
+    }
+
+    // ---- Finite sets -----------------------------------------------------
+    // Every builder checks its operand sorts rather than trusting them: these
+    // are reachable from the programmatic API as well as from the parser, and
+    // three defects found on 2026-08-12 were all terms this library could build
+    // and not read back.
+    namespace {
+        bool isSetNode(const std::shared_ptr<DAGNode>& n){
+            return n && n->getSort() && n->getSort()->isSet();
+        }
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetEmpty(std::shared_ptr<Sort> set_sort){
+        if(!set_sort || !set_sort->isSet()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "set.empty needs a set sort", line_number);
+            return mkUnknown();
+        }
+        return getNodeManager()->createNode(set_sort, NODE_KIND::NT_SET_EMPTY, "set.empty", {});
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetUniverse(std::shared_ptr<Sort> set_sort){
+        if(!set_sort || !set_sort->isSet()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "set.universe needs a set sort", line_number);
+            return mkUnknown();
+        }
+        return getNodeManager()->createNode(set_sort, NODE_KIND::NT_SET_UNIVERSE, "set.universe", {});
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetSingleton(std::shared_ptr<DAGNode> elem){
+        if(!elem || !elem->getSort()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.singleton", line_number);
+            return mkUnknown();
+        }
+        return mkOper(mkSetSort(elem->getSort()), NODE_KIND::NT_SET_SINGLETON, elem);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetUnion(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.empty() || !isSetNode(params[0])){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.union", line_number);
+            return mkUnknown();
+        }
+        for(const auto& p : params){
+            if(!isSetNode(p) || *p->getSort() != *params[0]->getSort()){
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "set.union needs sets of one element sort", line_number);
+                return mkUnknown();
+            }
+        }
+        return mkOper(params[0]->getSort(), NODE_KIND::NT_SET_UNION, params);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetInter(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.empty() || !isSetNode(params[0])){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.inter", line_number);
+            return mkUnknown();
+        }
+        for(const auto& p : params){
+            if(!isSetNode(p) || *p->getSort() != *params[0]->getSort()){
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "set.inter needs sets of one element sort", line_number);
+                return mkUnknown();
+            }
+        }
+        return mkOper(params[0]->getSort(), NODE_KIND::NT_SET_INTER, params);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetMinus(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r){
+        if(!isSetNode(l) || !isSetNode(r) || *l->getSort() != *r->getSort()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.minus", line_number);
+            return mkUnknown();
+        }
+        return mkOper(l->getSort(), NODE_KIND::NT_SET_MINUS, l, r);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetMember(std::shared_ptr<DAGNode> elem, std::shared_ptr<DAGNode> set){
+        // Element first. SMT-LIB writes (set.member x s), and the reverse order
+        // is the mistake a reader makes once -- so it is refused rather than
+        // quietly accepted by a symmetric check.
+        if(!isSetNode(set) || !elem || !elem->getSort()
+           || *elem->getSort() != *set->getSort()->getElemSort()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.member", line_number);
+            return mkUnknown();
+        }
+        return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_SET_MEMBER, elem, set);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetSubset(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r){
+        if(!isSetNode(l) || !isSetNode(r) || *l->getSort() != *r->getSort()){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.subset", line_number);
+            return mkUnknown();
+        }
+        return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_SET_SUBSET, l, r);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetCard(std::shared_ptr<DAGNode> set){
+        if(!isSetNode(set)){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.card", line_number);
+            return mkUnknown();
+        }
+        return mkOper(SortManager::INT_SORT, NODE_KIND::NT_SET_CARD, set);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetInsert(const std::vector<std::shared_ptr<DAGNode>>& params){
+        // (set.insert x1 ... xn s): the SET is last, which is the opposite of
+        // what the name suggests and is what SMT-LIB says.
+        if(params.size() < 2 || !isSetNode(params.back())){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.insert", line_number);
+            return mkUnknown();
+        }
+        auto elem_sort = params.back()->getSort()->getElemSort();
+        for(size_t i = 0; i + 1 < params.size(); ++i){
+            if(!params[i]->getSort() || *params[i]->getSort() != *elem_sort){
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "set.insert element sort mismatch", line_number);
+                return mkUnknown();
+            }
+        }
+        return mkOper(params.back()->getSort(), NODE_KIND::NT_SET_INSERT, params);
+    }
+
+    std::shared_ptr<DAGNode> Parser::mkSetComplement(std::shared_ptr<DAGNode> set){
+        if(!isSetNode(set)){
+            err_all(ERROR_TYPE::ERR_TYPE_MIS, "Type mismatch in set.complement", line_number);
+            return mkUnknown();
+        }
+        return mkOper(set->getSort(), NODE_KIND::NT_SET_COMPLEMENT, set);
+    }
+
     std::shared_ptr<DAGNode> Parser::mkSelect(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r){
         
         if(!isArrayParam(l)) {
@@ -4016,6 +4339,44 @@ namespace SOMTParser{
         // Apply array simplification to normalize store chain
         return simplifyArray(store_node);
     }
+    std::shared_ptr<DAGNode> Parser::mkArrayMap(
+            const std::string& op, const std::vector<std::shared_ptr<DAGNode>>& arrays) {
+        const auto kind = op == "and" ? NODE_KIND::NT_ARRAY_MAP_AND
+                        : op == "or" ? NODE_KIND::NT_ARRAY_MAP_OR
+                        : op == "not" ? NODE_KIND::NT_ARRAY_MAP_NOT
+                        : NODE_KIND::NT_UNKNOWN;
+        if (kind == NODE_KIND::NT_UNKNOWN) {
+            err_all(ERROR_TYPE::ERR_UNKWN_SYM, "unsupported array map function: " + op, line_number);
+            return mkUnknown();
+        }
+        if ((op == "not" && arrays.size() != 1)
+            || (op != "not" && arrays.size() < 2)) {
+            err_all(ERROR_TYPE::ERR_PARAM_MIS, "invalid Boolean array map arity", line_number);
+            return mkUnknown();
+        }
+        std::shared_ptr<Sort> sort;
+        for (const auto& array : arrays) {
+            if (!array || !array->getSort() || !array->getSort()->isArray()
+                || !array->getSort()->getElemSort()->isBool()
+                || (sort && !sort->isEqTo(array->getSort()))) {
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "array map needs Boolean arrays with identical index sorts", line_number);
+                return mkUnknown();
+            }
+            sort = array->getSort();
+        }
+        // Z3's mapped Boolean functions have fixed arity. Normalize our
+        // variadic API into binary maps without recursive construction.
+        if (op != "not" && arrays.size() > 2) {
+            auto result = arrays.front();
+            for (size_t i = 1; i < arrays.size(); ++i) {
+                result = getNodeManager()->createNode(sort, kind, op, {result, arrays[i]});
+            }
+            return result;
+        }
+        // Bypass scalar folding: and/or/not here act on every array cell.
+        return getNodeManager()->createNode(sort, kind, op, arrays);
+    }
+
     // TERM ANNOTATIONS — ported from the SMTStabilizer fork.
     // These are structural wrappers, so they bypass mkOper (and therefore
     // simplification): folding an annotation away is exactly what we are trying
@@ -4469,6 +4830,79 @@ namespace SOMTParser{
 
         return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_STR_GE, l, r);
     }
+    // str.< and str.<= are :chainable in the SMT-LIB strings theory: three or
+    // more arguments mean the conjunction of ADJACENT pairs, exactly like the
+    // numeric orderings above. str.> and str.>= are not in the standard at
+    // all -- they are accepted here as input leniency and given the same
+    // shape. Order is preserved; these are not commutative.
+    std::shared_ptr<DAGNode> Parser::mkStrLt(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.size() < 2) {
+            err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for str.<", line_number);
+            return mkUnknown();
+        }
+        if(params.size() == 2){
+            return mkStrLt(params[0], params[1]);
+        }
+        std::vector<std::shared_ptr<DAGNode>> pairs;
+        // pair-wise comparison: (str.< a b c d) <=> (and (str.< a b) (str.< b c) (str.< c d))
+        for(size_t i=0;i<params.size() - 1;i++){
+            std::shared_ptr<DAGNode> lt = mkStrLt(params[i], params[i + 1]);
+            if(lt->isErr()) return lt;
+            pairs.emplace_back(lt);
+        }
+        return mkAnd(pairs);
+    }
+    std::shared_ptr<DAGNode> Parser::mkStrLe(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.size() < 2) {
+            err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for str.<=", line_number);
+            return mkUnknown();
+        }
+        if(params.size() == 2){
+            return mkStrLe(params[0], params[1]);
+        }
+        std::vector<std::shared_ptr<DAGNode>> pairs;
+        // pair-wise comparison: (str.<= a b c d) <=> (and (str.<= a b) (str.<= b c) (str.<= c d))
+        for(size_t i=0;i<params.size() - 1;i++){
+            std::shared_ptr<DAGNode> le = mkStrLe(params[i], params[i + 1]);
+            if(le->isErr()) return le;
+            pairs.emplace_back(le);
+        }
+        return mkAnd(pairs);
+    }
+    std::shared_ptr<DAGNode> Parser::mkStrGt(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.size() < 2) {
+            err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for str.>", line_number);
+            return mkUnknown();
+        }
+        if(params.size() == 2){
+            return mkStrGt(params[0], params[1]);
+        }
+        std::vector<std::shared_ptr<DAGNode>> pairs;
+        // pair-wise comparison: (str.> a b c d) <=> (and (str.> a b) (str.> b c) (str.> c d))
+        for(size_t i=0;i<params.size() - 1;i++){
+            std::shared_ptr<DAGNode> gt = mkStrGt(params[i], params[i + 1]);
+            if(gt->isErr()) return gt;
+            pairs.emplace_back(gt);
+        }
+        return mkAnd(pairs);
+    }
+    std::shared_ptr<DAGNode> Parser::mkStrGe(const std::vector<std::shared_ptr<DAGNode>>& params){
+        if(params.size() < 2) {
+            err_all(ERROR_TYPE::ERR_PARAM_MIS, "Not enough parameters for str.>=", line_number);
+            return mkUnknown();
+        }
+        if(params.size() == 2){
+            return mkStrGe(params[0], params[1]);
+        }
+        std::vector<std::shared_ptr<DAGNode>> pairs;
+        // pair-wise comparison: (str.>= a b c d) <=> (and (str.>= a b) (str.>= b c) (str.>= c d))
+        for(size_t i=0;i<params.size() - 1;i++){
+            std::shared_ptr<DAGNode> ge = mkStrGe(params[i], params[i + 1]);
+            if(ge->isErr()) return ge;
+            pairs.emplace_back(ge);
+        }
+        return mkAnd(pairs);
+    }
     // STRINGS PROPERTIES
     /*
     (str.in_re Str Reg), return Bool
@@ -4711,6 +5145,35 @@ namespace SOMTParser{
             return mkUnknown();
         }
 
+        // UnicodeStrings defines a range with a non-singleton endpoint as
+        // re.none, even if the other endpoint is symbolic. Count characters,
+        // not UTF-8 bytes. Normalizing this case also avoids solver parsers
+        // that reject non-singleton constants in re.range.
+        bool loSingleton = false, hiSingleton = false;
+        if (l->isCStr()) {
+            const auto count = ConversionUtils::utf8CodePointCount(l->getStringLiteral());
+            if (count) {
+                if (*count != 1) { return mkRegNone(); }
+                loSingleton = true;
+            }
+        }
+        if (r->isCStr()) {
+            const auto count = ConversionUtils::utf8CodePointCount(r->getStringLiteral());
+            if (count) {
+                if (*count != 1) { return mkRegNone(); }
+                hiSingleton = true;
+            }
+        }
+        if (loSingleton && hiSingleton) {
+            const auto lo = l->getStringLiteral();
+            const auto hi = r->getStringLiteral();
+            // Valid UTF-8 preserves code point order under unsigned-byte
+            // comparison, including ranges crossing the ASCII boundary.
+            if (std::lexicographical_compare(hi.begin(), hi.end(), lo.begin(), lo.end(),
+                    [](unsigned char a, unsigned char b) { return a < b; })) {
+                return mkRegNone();
+            }
+        }
         return mkOper(SortManager::REG_SORT, NODE_KIND::NT_REG_RANGE, l, r);
     }
     /*
@@ -4851,6 +5314,14 @@ namespace SOMTParser{
     // negate an atom
     std::shared_ptr<DAGNode> Parser::negateComp(std::shared_ptr<DAGNode> atom){
         if(atom->isErr()) return atom;
+
+        // Equality and distinctness are complements only at arity two.
+        // For three or more terms, not-distinct requires just one equal pair,
+        // whereas equality requires all terms to be equal. Preserve NOT so
+        // neither polarity is changed or expanded into quadratic pairs.
+        if ((atom->isEq() || atom->isDistinct()) && atom->getChildrenSize() != 2) {
+            return mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_NOT, atom);
+        }
 
         if(atom->isEq()){
             return mkDistinct(atom->getChildren());
@@ -5028,6 +5499,8 @@ namespace SOMTParser{
     int Parser::getArity(NODE_KIND k) const{
         switch(k){
             // zero-ary
+            case NODE_KIND::NT_SET_EMPTY:
+            case NODE_KIND::NT_SET_UNIVERSE:
             case NODE_KIND::NT_NULL:
             case NODE_KIND::NT_CONST:
             case NODE_KIND::NT_VAR:
@@ -5050,6 +5523,9 @@ namespace SOMTParser{
                 return 0;
             
             // unary
+            case NODE_KIND::NT_SET_SINGLETON:
+            case NODE_KIND::NT_SET_CARD:
+            case NODE_KIND::NT_SET_COMPLEMENT:
             case NODE_KIND::NT_CONST_ARRAY:
             case NODE_KIND::NT_NOT:
             case NODE_KIND::NT_NEG:
@@ -5127,6 +5603,9 @@ namespace SOMTParser{
                 return 1;
 
             // binary
+            case NODE_KIND::NT_SET_MINUS:
+            case NODE_KIND::NT_SET_MEMBER:
+            case NODE_KIND::NT_SET_SUBSET:
             case NODE_KIND::NT_POW:
             case NODE_KIND::NT_DIV_INT:
             case NODE_KIND::NT_DIV_REAL:
@@ -5175,10 +5654,6 @@ namespace SOMTParser{
             case NODE_KIND::NT_STR_SUFFIXOF:
             case NODE_KIND::NT_STR_CHARAT:
             case NODE_KIND::NT_STR_SPLIT:
-            case NODE_KIND::NT_STR_LT:
-            case NODE_KIND::NT_STR_LE:
-            case NODE_KIND::NT_STR_GT:
-            case NODE_KIND::NT_STR_GE:
             case NODE_KIND::NT_STR_IN_REG:
             case NODE_KIND::NT_STR_CONTAINS:
             case NODE_KIND::NT_STR_NUM_SPLITS_RE:
@@ -5222,6 +5697,12 @@ namespace SOMTParser{
                 return 4;
 
             // n-ary
+            case NODE_KIND::NT_ARRAY_MAP_AND:
+            case NODE_KIND::NT_ARRAY_MAP_OR:
+            case NODE_KIND::NT_ARRAY_MAP_NOT:
+            case NODE_KIND::NT_SET_UNION:
+            case NODE_KIND::NT_SET_INTER:
+            case NODE_KIND::NT_SET_INSERT:
             // The four orderings are :chainable, exactly as `=` and `distinct`
             // are, so `(<= a b c)` has the arity of the list it is given. They
             // sat in the `binary` group above, which made a conforming script a
@@ -5231,6 +5712,13 @@ namespace SOMTParser{
             case NODE_KIND::NT_LT:
             case NODE_KIND::NT_GE:
             case NODE_KIND::NT_GT:
+            // str.< and str.<= are :chainable in the strings theory for the
+            // same reason; str.>/str.>= are accepted as leniency with the
+            // same shape.
+            case NODE_KIND::NT_STR_LT:
+            case NODE_KIND::NT_STR_LE:
+            case NODE_KIND::NT_STR_GT:
+            case NODE_KIND::NT_STR_GE:
             case NODE_KIND::NT_EQ:
             case NODE_KIND::NT_EQ_BOOL:
             case NODE_KIND::NT_EQ_OTHER:

@@ -1,0 +1,10 @@
+; Distinct instantiations of the same nullary constructor must not share a type.
+(set-logic ALL)
+(declare-datatype Event (par (T) ((Absent) (Present (value T)))))
+(define-system S
+  :input ((x (Event Int)) (y (Event Bool)) (b Bool))
+  :inv (and (= x Absent) (= y (ite b y Absent))))
+(check-system S
+  :input ((x (Event Int)) (y (Event Bool)) (b Bool))
+  :reachable (r ((_ is Present) x))
+  :query (q (r)))

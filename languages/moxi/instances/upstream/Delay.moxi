@@ -1,0 +1,22 @@
+(set-logic QF_ABV)
+(define-system Delay 
+   :input ((i (_ BitVec 8)) (o (_ BitVec 8))) 
+   :output () 
+   :local () 
+   :init (= o #b00000000) 
+   :trans (= o' i) 
+   :inv true )
+(define-system main 
+   :input ((i (_ BitVec 8))) 
+   :output ((o (_ BitVec 8))) 
+   :local ((D.i (_ BitVec 8)) (D.o (_ BitVec 8))) 
+   :init true 
+   :trans true 
+   :inv (and (= D.i i) (= D.o o)) 
+   :subsys (D (Delay D.i D.o)))
+(check-system main 
+   :input ((i (_ BitVec 8))) 
+   :output ((o (_ BitVec 8))) 
+   :local ((D.i (_ BitVec 8)) (D.o (_ BitVec 8))) 
+   :reachable (rch_1 (not (not (= o #b00000010))))
+   :query (qry_rch_1 (rch_1)))

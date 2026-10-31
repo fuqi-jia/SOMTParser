@@ -1,0 +1,4 @@
+fof(keep, axiom, selected_fact).
+fof(drop, axiom, unselected_fact).
+fof(duplicate, axiom, duplicate_one).
+fof(duplicate, axiom, duplicate_two).

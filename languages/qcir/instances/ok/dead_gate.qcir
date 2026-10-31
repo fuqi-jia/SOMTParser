@@ -1,0 +1,8 @@
+#QCIR-G14
+# qcir.md §4.3. g2 is not reachable from the output, so the semantics ignores
+# it. Emitting it would add a constraint the formula does not have AND would
+# introduce zzz and qqq, which appear nowhere else -- so the translation would
+# report a different variable count for the same formula.
+output(g1)
+g1 = and(a)
+g2 = and(zzz, qqq)

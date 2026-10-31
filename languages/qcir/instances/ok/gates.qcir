@@ -1,0 +1,7 @@
+#QCIR-G14
+# xor and ite, which a cleansed file may not contain.
+exists(a, b, c)
+output(g3)
+g1 = xor(a, b)
+g2 = ite(c, a, b)
+g3 = and(g1, g2)

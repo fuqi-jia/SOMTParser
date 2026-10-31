@@ -8,8 +8,9 @@
 //
 // The names this rejected are not exotic:
 //
-//   * `HORN` is what Z3, Eldarica and Golem consume, and every CHC-COMP
-//     instance opens with it;
+//   * `HORN` is what Z3, Eldarica and Golem consume, and is now a recognised
+//     alias for enabling every background theory while the CHC frontend checks
+//     clause shape;
 //   * SMT-LIB gains logics over time, so a released parser that refuses an
 //     unknown one refuses inputs that are legal today and inputs that become
 //     legal later.
@@ -54,9 +55,9 @@ int main() {
         VERIFY(reader->parseStr(s));
     }
 
-    // ---- Any unknown name, since the point is not HORN specifically. -------
+    // ---- Truly unknown names remain forward-compatible. -------------------
     {
-        for (const char* logic : {"HORN", "QF_NEWTHEORY", "AUFBVFPDTNIRA_2030"}) {
+        for (const char* logic : {"QF_NEWTHEORY", "AUFBVFPDTNIRA_2030"}) {
             ParserPtr p = newParser();
             const std::string src =
                 std::string("(set-logic ") + logic + ")\n"

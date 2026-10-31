@@ -1,0 +1,26 @@
+(set-logic QF_BV)
+
+; One-step delay
+(define-system Delay :input ( (i (_ BitVec 8)) ) :output ( (o (_ BitVec 8)) )
+  :local ( (s (_ BitVec 8)) )
+  :inv (= s i) 
+  :init (= o #b00000000)
+  :trans (= o' s)
+)
+
+; Two-step delay
+(define-system DoubleDelay :input ( (in (_ BitVec 8)) ) :output ( (out (_ BitVec 8)) )
+  :local ( (temp (_ BitVec 8)) )
+  :subsys  (A (Delay in temp))
+  :subsys  (B (Delay temp out))
+)
+
+(check-system DoubleDelay 
+  :input ( (i (_ BitVec 8)) ) 
+  :output ( (o (_ BitVec 8)) )
+  :local ( (t (_ BitVec 8)) )
+  :reachable (rch1 (= o #b00000001))
+  :reachable (rch2 (= o #b00000010))
+  :query (q1 (rch1))
+  :query (q2 (rch2))
+)

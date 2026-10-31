@@ -339,8 +339,10 @@ namespace SOMTParser{
             return "nat2bv";
         // These two had no case at all, so they fell through to the
         // "UNKNOWN_KIND" default and printed as (UNKNOWN_KIND x).
+        // The internal BV_TO_INT builder is signed; bv2int in SMT-LIB
+        // solver dialects is unsigned. Preserve the sign when serializing.
         case NODE_KIND::NT_BV_TO_INT:
-            return "bv2int";
+            return "sbv_to_int";
         case NODE_KIND::NT_INT_TO_BV:
             return "int2bv";
         case NODE_KIND::NT_UBV_TO_INT:
@@ -396,6 +398,17 @@ namespace SOMTParser{
             return "to_fp_unsigned";
         case NODE_KIND::NT_FP_TO_IEEE_BV:
             return "fp.to_ieee_bv";
+        case NODE_KIND::NT_SET_SINGLETON:  return "set.singleton";
+        case NODE_KIND::NT_SET_UNION:      return "set.union";
+        case NODE_KIND::NT_SET_INTER:      return "set.inter";
+        case NODE_KIND::NT_SET_MINUS:      return "set.minus";
+        case NODE_KIND::NT_SET_MEMBER:     return "set.member";
+        case NODE_KIND::NT_SET_SUBSET:     return "set.subset";
+        case NODE_KIND::NT_SET_CARD:       return "set.card";
+        case NODE_KIND::NT_SET_INSERT:     return "set.insert";
+        case NODE_KIND::NT_SET_COMPLEMENT: return "set.complement";
+        case NODE_KIND::NT_SET_EMPTY:      return "set.empty";
+        case NODE_KIND::NT_SET_UNIVERSE:   return "set.universe";
 
         // FLOATING POINT PROPERTIES
         case NODE_KIND::NT_FP_IS_NORMAL:
@@ -417,6 +430,9 @@ namespace SOMTParser{
             return "select";
         case NODE_KIND::NT_STORE:
             return "store";
+        case NODE_KIND::NT_ARRAY_MAP_AND: return "(_ map and)";
+        case NODE_KIND::NT_ARRAY_MAP_OR: return "(_ map or)";
+        case NODE_KIND::NT_ARRAY_MAP_NOT: return "(_ map not)";
         // DATATYPE / TUPLE / ANNOTATION operators — ported from the
         // SMTStabilizer fork.
         case NODE_KIND::NT_DT_TESTER:

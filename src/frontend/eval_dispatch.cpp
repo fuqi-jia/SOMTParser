@@ -281,6 +281,11 @@ static OpDispatcher<bool, EvalContext> buildEvalDispatcher() {
     // Boolean
     d.onAND(A::h_and).onOR(A::h_or).onNOT(A::h_not).onIMPLIES(A::h_implies).onXOR(A::h_xor);
     d.onEQ(A::h_eq).onDISTINCT(A::h_distinct).onITE(A::h_ite);
+    // The IR also carries typed equality/distinct kinds. They have the same
+    // semantics and operand traversal as the generic spelling; falling back
+    // here silently returns a symbolic term even under a complete model.
+    d.on(NODE_KIND::NT_EQ_BOOL, A::h_eq).on(NODE_KIND::NT_EQ_OTHER, A::h_eq);
+    d.on(NODE_KIND::NT_DISTINCT_BOOL, A::h_distinct).on(NODE_KIND::NT_DISTINCT_OTHER, A::h_distinct);
 
     // Arithmetic
     d.onADD(A::h_add).on(NODE_KIND::NT_NEG, A::h_neg).onSUB(A::h_sub).onMUL(A::h_mul);

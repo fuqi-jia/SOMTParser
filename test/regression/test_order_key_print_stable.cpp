@@ -2,8 +2,8 @@
 // an operand prints.
 //
 // It used to be DAGNode::hashCode(), which also mixes in the sort string and
-// the internal name/child layout. Neither survives a dump: a Real literal
-// prints as `0` and reads back as IntOrReal, and an fp literal built by
+// the internal name/child layout. Historically a Real literal printed as `0`
+// and read back as IntOrReal; the exporter now preserves `0.0`. An fp literal built by
 // ((_ to_fp 11 53) RNE 1.0) is a childless node whose name is the whole
 // literal, while the same text read back as (fp #b0 ...) is a three-child node
 // named "(fp_bit_representation)". Ordering by hashCode() therefore gave one
@@ -19,6 +19,7 @@
 #include "somtparser/frontend/parser.h"
 
 #include <iostream>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -63,13 +64,30 @@ void check(const char* what, const std::shared_ptr<DAGNode>& a, const std::share
 int main() {
     std::cout << "======= commutative order key depends only on printed form =======\n";
 
-    // A Real literal and the Int-or-Real literal its printed form reads back as.
+    // The first request for a shared DAG's key must equal the hash of its
+    // fully expanded canonical text. Caching descendants changes the work
+    // performed, never the operand ordering or the byte sequence it denotes.
+    {
+        auto parser = newParser();
+        auto maximum = parser->mkVarInt("first");
+        for (unsigned i = 0; i < 7; ++i) {
+            const auto item = parser->mkVarInt("item" + std::to_string(i));
+            maximum = parser->mkIte(parser->mkGe(maximum, item), maximum, item);
+        }
+        std::uint64_t expected = 0;
+        for (const unsigned char byte : dumpSMTLIB2(maximum)) {
+            expected = expected * 1099511628211ull + byte;
+        }
+        VERIFY(maximum->orderKey() == static_cast<std::size_t>(expected));
+        VERIFY(maximum->orderKey() == static_cast<std::size_t>(expected));
+    }
+
+    // Integral Real literals retain their sort and order key on export/reparse.
     {
         const std::string decl = "(set-logic ALL)(declare-const zero2 Real)";
-        auto written = operandPrintingAs(decl + "(assert (= zero2 0.00000))", "0");
-        auto reread = operandPrintingAs(decl + "(assert (= zero2 0))", "0");
-        // The premise of the whole bug: these really are different nodes.
-        VERIFY(written->getSort()->toString() != reread->getSort()->toString());
+        auto written = operandPrintingAs(decl + "(assert (= zero2 0.00000))", "0.0");
+        auto reread = operandPrintingAs(decl + "(assert (= zero2 0.0))", "0.0");
+        VERIFY(written->getSort()->isReal() && reread->getSort()->isReal());
         check("real zero", written, reread);
     }
 
@@ -89,12 +107,13 @@ int main() {
     // print alike must lay them out the same way in both scripts. Reverting
     // sortParams to hashCode() leaves every check above passing and fails here.
     {
-        auto real_zero = std::make_shared<Parser>();
-        VERIFY(real_zero->parseStr("(set-logic ALL)(declare-const zero2 Real)(assert (= zero2 0.00000))"));
-        auto int_zero = std::make_shared<Parser>();
-        VERIFY(int_zero->parseStr("(set-logic ALL)(declare-const zero2 Real)(assert (= zero2 0))"));
-        const std::string a = dumpSMTLIB2(real_zero->getAssertions()[0]);
-        const std::string b = dumpSMTLIB2(int_zero->getAssertions()[0]);
+        const std::string decl = "(set-logic ALL)(declare-const x (_ FloatingPoint 11 53))";
+        auto folded = std::make_shared<Parser>();
+        VERIFY(folded->parseStr(decl + "(assert (fp.eq x ((_ to_fp 11 53) RNE 1.0)))"));
+        const std::string a = dumpSMTLIB2(folded->getAssertions()[0]);
+        auto reread = std::make_shared<Parser>();
+        VERIFY(reread->parseStr(decl + "(assert " + a + ")"));
+        const std::string b = dumpSMTLIB2(reread->getAssertions()[0]);
         if (a != b) {
             std::cerr << "  commutative order not stable across representations:\n"
                       << "    " << a << "\n    " << b << "\n";

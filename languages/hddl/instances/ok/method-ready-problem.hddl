@@ -1,0 +1,4 @@
+(define (problem ready-method)
+  (:domain test-domain)
+  (:htn :subtasks (task1))
+  (:init (p)))

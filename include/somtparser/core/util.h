@@ -147,9 +147,6 @@ namespace SOMTParser{
     // Floating point utilities
     class FloatingPointUtils {
     public:
-        static std::string fpToUbv(const std::string& fp, const Integer& n);
-        static std::string fpToSbv(const std::string& fp, const Integer& n);
-
         // ─── Generic FP bit-level representation ──────────────────────────
         // Represents an arbitrary-width IEEE-754 FP value as (sign, exponent, significand).
         // eb = exponent bit width, sb = significand bit width (incl. hidden bit per SMT-LIB).
@@ -190,7 +187,8 @@ namespace SOMTParser{
         static int smtRMToFeround(const std::string& rm_name);
         static int getFPRoundingMode(const std::shared_ptr<DAGNode>& rm_node);
 
-        // ─── Rounding mode (MPFR-based, supports all 5 IEEE modes) ───
+        // MPFR_RNDNA marks RNA/unknown modes that optional helpers preserve
+        // symbolically. It must not be passed to ordinary MPFR arithmetic.
         static mpfr_rnd_t smtRMToMpfrRound(const std::string& rm_name);
         static mpfr_rnd_t getFPRoundingModeMpfr(const std::shared_ptr<DAGNode>& rm_node);
 

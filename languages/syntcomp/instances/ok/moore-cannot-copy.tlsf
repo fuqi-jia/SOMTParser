@@ -1,0 +1,13 @@
+INFO {
+  TITLE: "Moore cannot copy"
+  DESCRIPTION: "No current-input-independent output copies every input"
+  SEMANTICS: Moore
+  TARGET: Moore
+}
+MAIN {
+  INPUTS { request; }
+  OUTPUTS { grant; }
+  GUARANTEES {
+    G (grant <-> request);
+  }
+}
