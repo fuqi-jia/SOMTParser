@@ -29,12 +29,18 @@ We welcome contributions from the community! Here are some ways you can help:
 
 ## Contribution Guidelines
 
-1. **Fork the repository** and create a feature branch from `main`
+SMT parser and core SMT fixes, including compiler/build compatibility, go
+directly to `main`. Future technical work, including language translation,
+new language frontends and related HIR/lowering extensions, belongs on
+`develop`. Shared SMT fixes can be ported from `main` to `develop` as needed;
+promotion of future features into `main` is a separate integration.
+
+1. **Fork the repository** and create a feature branch from the appropriate target branch above
 2. **Follow the coding style** used in the existing codebase
 3. **Add tests** for any new functionality
 4. **Update documentation** if needed
 5. **Ensure all tests pass** by running `./test/run_all_tests.sh`
-6. **Submit a pull request** with a clear description of your changes
+6. **Submit a pull request** against that target branch with a clear description of your changes
 
 ## Recognition
 
