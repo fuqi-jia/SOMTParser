@@ -1,3 +1,0 @@
-var int: entry;
-constraint gecode_table_int([0],[entry]);
-solve satisfy;

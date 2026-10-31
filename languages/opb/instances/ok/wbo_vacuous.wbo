@@ -1,8 +1,0 @@
-* opb-wbo.md §4.4 option B, and here it is exact(): T = 10 exceeds the sum of
-* costs (5), so no assignment can reach the threshold and it constrains
-* nothing. Restricted OPB guarantees T = 1 + sum(costs) for competition
-* instances where every interpretation is admissible, which covers most of the
-* corpus -- but it must be CHECKED per instance, not assumed.
-soft: 10 ;
-[2] 1 x1 >= 1 ;
-[3] 1 x2 >= 1 ;

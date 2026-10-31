@@ -122,25 +122,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake libgmp-dev libmpfr-dev libegl1 libgl1
-
-    - name: Install MiniZinc reference solver
-      # Match the qualification environment; Ubuntu's older package lacks the
-      # JSON FlatZinc output used by the independent semantic checks.
-      run: |
-        curl --fail --location --retry 3 \
-          https://github.com/MiniZinc/MiniZincIDE/releases/download/2.10.1/MiniZincIDE-2.10.1-x86_64-linux-gnu.tgz \
-          --output "$RUNNER_TEMP/minizinc.tgz"
-        echo "b63dd88491d47b05d0eb0ff4aa1112d1e6f77292c023800b20b98851458ce01c  $RUNNER_TEMP/minizinc.tgz" | sha256sum --check
-        mkdir -p "$RUNNER_TEMP/minizinc"
-        tar -xzf "$RUNNER_TEMP/minizinc.tgz" -C "$RUNNER_TEMP/minizinc" --strip-components=1
-        echo "SOMTPARSER_MINIZINC_EXECUTABLE=$RUNNER_TEMP/minizinc/bin/minizinc" >> "$GITHUB_ENV"
-        "$RUNNER_TEMP/minizinc/bin/minizinc" --version
-        # The bundled Gecode executable also links Qt's GL/EGL libraries.
-        # Exercise it before compiling the package so missing shared libraries
-        # fail here rather than appearing as many semantic-test failures.
-        printf 'var 1..1: x :: output_var; solve satisfy;\n' > "$RUNNER_TEMP/oracle-smoke.fzn"
-        "$RUNNER_TEMP/minizinc/bin/fzn-gecode" "$RUNNER_TEMP/oracle-smoke.fzn"
+        sudo apt-get install -y build-essential cmake libgmp-dev libmpfr-dev
 
     - name: Build and install the package
       run: |

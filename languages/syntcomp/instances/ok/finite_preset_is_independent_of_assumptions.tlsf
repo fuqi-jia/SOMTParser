@@ -1,9 +1,0 @@
-INFO { TITLE: "preset remains mandatory when assumption fails" SEMANTICS: Finite,Mealy TARGET: Mealy }
-MAIN {
-  INPUTS { }
-  OUTPUTS { }
-  INITIALLY { true; }
-  PRESET { false; }
-  ASSUMPTIONS { false; }
-  GUARANTEES { false; }
-}

@@ -16,19 +16,6 @@
 #include <pybind11/stl.h>
 
 #include <somtparser/parser.h>
-#include "hir_bindings.h"
-#include "planning_numeric_bindings.h"
-#include "planning_derived_bindings.h"
-#include "planning_temporal_bindings.h"
-#include "planning_timed_initial_bindings.h"
-#include "planning_continuous_bindings.h"
-#include "planning_objects_bindings.h"
-#include "planning_trajectory_bindings.h"
-#include "module_bindings.h"
-#include "translate_bindings.h"
-
-#include "somtparser/languages/register_all.h"
-#include "somtparser/translation/translate.h"
 
 #include <memory>
 #include <string>
@@ -37,7 +24,6 @@
 #include <vector>
 
 namespace py = pybind11;
-namespace Sem = SOMTParser::Uir::Sem;
 using namespace SOMTParser;
 
 using NodePtr  = std::shared_ptr<DAGNode>;
@@ -547,317 +533,6 @@ PYBIND11_MODULE(_somtparser, m) {
             return "<Script with " + std::to_string(s.size()) + " commands>";
         });
 
-    // ===== Multi-language frontend =====
-    // Registration is explicit: a static registrar in a static library would be
-    // dropped by the linker.
-    SOMTParser::Lang::registerAllLanguages(SOMTParser::Lang::LanguageRegistry::instance());
-
-    py::enum_<SOMTParser::Uir::ErrorCode>(m, "ErrorCode")
-        .value("OK", SOMTParser::Uir::ErrorCode::OK)
-        .value("E_IO", SOMTParser::Uir::ErrorCode::E_IO)
-        .value("E_LEX", SOMTParser::Uir::ErrorCode::E_LEX)
-        .value("E_PARSE", SOMTParser::Uir::ErrorCode::E_PARSE)
-        .value("E_TYPE", SOMTParser::Uir::ErrorCode::E_TYPE)
-        .value("E_UNSUPPORTED_CONSTRUCT", SOMTParser::Uir::ErrorCode::E_UNSUPPORTED_CONSTRUCT)
-        .value("E_NO_ENCODING", SOMTParser::Uir::ErrorCode::E_NO_ENCODING)
-        .value("E_FIDELITY_REJECTED", SOMTParser::Uir::ErrorCode::E_FIDELITY_REJECTED)
-        .value("E_PASS_PIPELINE", SOMTParser::Uir::ErrorCode::E_PASS_PIPELINE)
-        .value("E_RESOURCE", SOMTParser::Uir::ErrorCode::E_RESOURCE)
-        .value("E_INTERNAL", SOMTParser::Uir::ErrorCode::E_INTERNAL);
-
-    py::enum_<SOMTParser::Lower::OmtDialect>(m, "OmtDialect")
-        .value("SmtLib2025", SOMTParser::Lower::OmtDialect::SmtLib2025)
-        .value("Gomt", SOMTParser::Lower::OmtDialect::Gomt)
-        .value("Z3", SOMTParser::Lower::OmtDialect::Z3)
-        .value("OptiMathSAT", SOMTParser::Lower::OmtDialect::OptiMathSAT)
-        .value("NONE", SOMTParser::Lower::OmtDialect::None);
-
-    py::class_<SOMTParser::Uir::Fidelity::Bound> bound(m, "Bound",
-        "A limit outside which the translation's conclusion does not hold");
-    // kind is what makes value readable: 32 means a bit width under BV_WIDTH
-    // and a step count under BMC_DEPTH, and the eval pipeline stratifies on
-    // the distinction. Binding value without kind would hide it from Python.
-    py::enum_<SOMTParser::Uir::Fidelity::Bound::Kind>(bound, "Kind")
-        .value("BMC_DEPTH", SOMTParser::Uir::Fidelity::Bound::BMC_DEPTH)
-        .value("BV_WIDTH", SOMTParser::Uir::Fidelity::Bound::BV_WIDTH)
-        .value("DOMAIN_CUT", SOMTParser::Uir::Fidelity::Bound::DOMAIN_CUT)
-        .value("HORN_UNROLL", SOMTParser::Uir::Fidelity::Bound::HORN_UNROLL)
-        .value("PLAN_HORIZON", SOMTParser::Uir::Fidelity::Bound::PLAN_HORIZON)
-        .value("DECOMPOSITION_DEPTH",
-               SOMTParser::Uir::Fidelity::Bound::DECOMPOSITION_DEPTH)
-        .value("GRAMMAR_RESTRICTION",
-               SOMTParser::Uir::Fidelity::Bound::GRAMMAR_RESTRICTION)
-        .value("STRATEGY_SIZE", SOMTParser::Uir::Fidelity::Bound::STRATEGY_SIZE)
-        .export_values();
-    bound
-        .def_readonly("kind", &SOMTParser::Uir::Fidelity::Bound::kind)
-        .def_readonly("value", &SOMTParser::Uir::Fidelity::Bound::value)
-        .def_readonly("site", &SOMTParser::Uir::Fidelity::Bound::site);
-
-    py::enum_<Sem::CarrierSemantics>(m, "CarrierSemantics")
-        .value("FINITE", Sem::CarrierSemantics::FINITE)
-        .value("INFINITE", Sem::CarrierSemantics::INFINITE)
-        .value("MIXED", Sem::CarrierSemantics::MIXED);
-    py::enum_<Sem::CarrierEmptiness>(m, "CarrierEmptiness")
-        .value("NONEMPTY", Sem::CarrierEmptiness::NONEMPTY)
-        .value("EMPTY_ALLOWED", Sem::CarrierEmptiness::EMPTY_ALLOWED)
-        .value("MIXED", Sem::CarrierEmptiness::MIXED);
-    py::enum_<Sem::FunctionSemantics>(m, "FunctionSemantics")
-        .value("TOTAL", Sem::FunctionSemantics::TOTAL)
-        .value("PARTIAL", Sem::FunctionSemantics::PARTIAL)
-        .value("MIXED", Sem::FunctionSemantics::MIXED);
-    py::enum_<Sem::UndefinedSemantics>(m, "UndefinedSemantics")
-        .value("RELATIONAL_FALSE", Sem::UndefinedSemantics::RELATIONAL_FALSE)
-        .value("KLEENE", Sem::UndefinedSemantics::KLEENE)
-        .value("STRICT", Sem::UndefinedSemantics::STRICT)
-        .value("ERROR", Sem::UndefinedSemantics::ERROR)
-        .value("TARGET_DEFINED", Sem::UndefinedSemantics::TARGET_DEFINED);
-    py::enum_<Sem::ArithmeticSemantics>(m, "ArithmeticSemantics")
-        .value("NONE", Sem::ArithmeticSemantics::NONE)
-        .value("INTEGER", Sem::ArithmeticSemantics::INTEGER)
-        .value("RATIONAL", Sem::ArithmeticSemantics::RATIONAL)
-        .value("REAL", Sem::ArithmeticSemantics::REAL)
-        .value("BIT_VECTOR", Sem::ArithmeticSemantics::BIT_VECTOR)
-        .value("FLOATING_POINT", Sem::ArithmeticSemantics::FLOATING_POINT)
-        .value("MIXED", Sem::ArithmeticSemantics::MIXED);
-    py::enum_<Sem::OverflowSemantics>(m, "OverflowSemantics")
-        .value("UNBOUNDED", Sem::OverflowSemantics::UNBOUNDED)
-        .value("MODULAR", Sem::OverflowSemantics::MODULAR)
-        .value("ABORT", Sem::OverflowSemantics::ABORT)
-        .value("TARGET_DEFINED", Sem::OverflowSemantics::TARGET_DEFINED);
-    py::enum_<Sem::DivisionSemantics>(m, "DivisionSemantics")
-        .value("EUCLIDEAN", Sem::DivisionSemantics::EUCLIDEAN)
-        .value("TRUNCATE_TOWARD_ZERO", Sem::DivisionSemantics::TRUNCATE_TOWARD_ZERO)
-        .value("FLOOR", Sem::DivisionSemantics::FLOOR)
-        .value("EXACT_REAL", Sem::DivisionSemantics::EXACT_REAL)
-        .value("MIXED", Sem::DivisionSemantics::MIXED);
-    py::enum_<Sem::ArraySemantics>(m, "ArraySemantics")
-        .value("FINITE_PARTIAL", Sem::ArraySemantics::FINITE_PARTIAL)
-        .value("TOTAL_EXTENSIONAL", Sem::ArraySemantics::TOTAL_EXTENSIONAL)
-        .value("FIXED_VECTOR", Sem::ArraySemantics::FIXED_VECTOR)
-        .value("NONE", Sem::ArraySemantics::NONE);
-    py::enum_<Sem::EqualitySemantics>(m, "EqualitySemantics")
-        .value("EXTENSIONAL", Sem::EqualitySemantics::EXTENSIONAL)
-        .value("INTENSIONAL", Sem::EqualitySemantics::INTENSIONAL)
-        .value("QUOTIENT", Sem::EqualitySemantics::QUOTIENT)
-        .value("MIXED", Sem::EqualitySemantics::MIXED);
-    py::enum_<Sem::QuantifierSemantics>(m, "QuantifierSemantics")
-        .value("FINITE_EXPANSION", Sem::QuantifierSemantics::FINITE_EXPANSION)
-        .value("NATIVE", Sem::QuantifierSemantics::NATIVE)
-        .value("MIXED", Sem::QuantifierSemantics::MIXED)
-        .value("NONE", Sem::QuantifierSemantics::NONE);
-    py::enum_<Sem::PhaseSemantics>(m, "PhaseSemantics")
-        .value("STATIC_ERROR", Sem::PhaseSemantics::STATIC_ERROR)
-        .value("CONSTRAINT_FAILURE", Sem::PhaseSemantics::CONSTRAINT_FAILURE)
-        .value("UNDEFINED_VALUE", Sem::PhaseSemantics::UNDEFINED_VALUE)
-        .value("MIXED", Sem::PhaseSemantics::MIXED);
-    py::enum_<Sem::AnnotationSemantics>(m, "AnnotationSemantics")
-        .value("SEMANTIC", Sem::AnnotationSemantics::SEMANTIC)
-        .value("STRATEGY_ONLY", Sem::AnnotationSemantics::STRATEGY_ONLY)
-        .value("MIXED", Sem::AnnotationSemantics::MIXED)
-        .value("NONE", Sem::AnnotationSemantics::NONE);
-    py::enum_<Sem::DecisionKind>(m, "DecisionKind")
-        .value("SATISFIABILITY", Sem::DecisionKind::SATISFIABILITY)
-        .value("MODEL_COUNTING", Sem::DecisionKind::MODEL_COUNTING)
-        .value("OPTIMIZATION", Sem::DecisionKind::OPTIMIZATION)
-        .value("QBF_TRUTH", Sem::DecisionKind::QBF_TRUTH)
-        .value("HORN_SATISFIABILITY", Sem::DecisionKind::HORN_SATISFIABILITY)
-        .value("VALIDITY", Sem::DecisionKind::VALIDITY)
-        .value("SAFETY", Sem::DecisionKind::SAFETY)
-        .value("PROGRAM_VERIFICATION", Sem::DecisionKind::PROGRAM_VERIFICATION)
-        .value("REACHABILITY", Sem::DecisionKind::REACHABILITY)
-        .value("PLAN_EXISTENCE", Sem::DecisionKind::PLAN_EXISTENCE)
-        .value("FUNCTION_SYNTHESIS", Sem::DecisionKind::FUNCTION_SYNTHESIS)
-        .value("REACTIVE_REALIZABILITY", Sem::DecisionKind::REACTIVE_REALIZABILITY);
-    py::enum_<Sem::SmtEmbeddingKind>(m, "SmtEmbeddingKind")
-        .value("DIRECT_REDUCTION", Sem::SmtEmbeddingKind::DIRECT_REDUCTION)
-        .value("BOUNDED_UNDER_APPROXIMATION",
-               Sem::SmtEmbeddingKind::BOUNDED_UNDER_APPROXIMATION)
-        .value("NO_DIRECT_FIRST_ORDER_REDUCTION",
-               Sem::SmtEmbeddingKind::NO_DIRECT_FIRST_ORDER_REDUCTION);
-
-    py::class_<Sem::AssumptionProfile>(m, "AssumptionProfile")
-        .def_readonly("id", &Sem::AssumptionProfile::id)
-        .def_readonly("carriers", &Sem::AssumptionProfile::carriers)
-        .def_readonly("carrier_emptiness", &Sem::AssumptionProfile::carrier_emptiness)
-        .def_readonly("functions", &Sem::AssumptionProfile::functions)
-        .def_readonly("undefined", &Sem::AssumptionProfile::undefined)
-        .def_readonly("arithmetic", &Sem::AssumptionProfile::arithmetic)
-        .def_readonly("overflow", &Sem::AssumptionProfile::overflow)
-        .def_readonly("division", &Sem::AssumptionProfile::division)
-        .def_readonly("arrays", &Sem::AssumptionProfile::arrays)
-        .def_readonly("equality", &Sem::AssumptionProfile::equality)
-        .def_readonly("quantifiers", &Sem::AssumptionProfile::quantifiers)
-        .def_readonly("invalid_phase", &Sem::AssumptionProfile::invalid_phase)
-        .def_readonly("annotations", &Sem::AssumptionProfile::annotations);
-    py::class_<Sem::Institution>(m, "Institution")
-        .def_readonly("id", &Sem::Institution::id)
-        .def_readonly("surface_language", &Sem::Institution::surface_language)
-        .def_readonly("object_logic", &Sem::Institution::object_logic)
-        .def_readonly("meta_logic", &Sem::Institution::meta_logic)
-        .def_readonly("sentence_space", &Sem::Institution::sentence_space)
-        .def_readonly("model_class", &Sem::Institution::model_class)
-        .def_readonly("satisfaction_relation", &Sem::Institution::satisfaction_relation)
-        .def_readonly("assumptions", &Sem::Institution::assumptions);
-    py::class_<Sem::SourceSemanticSpec>(m, "SourceSemanticSpec")
-        .def_readonly("institution", &Sem::SourceSemanticSpec::institution)
-        .def_readonly("decisions", &Sem::SourceSemanticSpec::decisions)
-        .def_readonly("smt_embedding", &Sem::SourceSemanticSpec::smt_embedding)
-        .def_readonly("required_bounds", &Sem::SourceSemanticSpec::required_bounds)
-        .def_readonly("decision_bounds", &Sem::SourceSemanticSpec::decision_bounds)
-        .def_readonly("rationale", &Sem::SourceSemanticSpec::rationale)
-        .def_property_readonly("valid", &Sem::SourceSemanticSpec::valid)
-        .def("supports", &Sem::SourceSemanticSpec::supports, py::arg("decision"));
-
-    py::class_<SOMTParser::Uir::CountEvidence>(m, "CountEvidence",
-            "Recorded evidence metadata for a local model-count claim")
-        .def_property_readonly("kind", [](const SOMTParser::Uir::CountEvidence& e) {
-            return std::string(SOMTParser::Uir::evidenceKindName(e.kind));
-        })
-        .def_readonly("rationale", &SOMTParser::Uir::CountEvidence::rationale)
-        .def_readonly("references", &SOMTParser::Uir::CountEvidence::references);
-
-    py::class_<SOMTParser::Uir::Fidelity>(m, "Fidelity",
-            "Independent soundness, completeness, optimum, and count guarantees")
-        .def_readonly("sound", &SOMTParser::Uir::Fidelity::sound)
-        .def_readonly("complete", &SOMTParser::Uir::Fidelity::complete)
-        .def_readonly("preserves_optimum", &SOMTParser::Uir::Fidelity::preserves_optimum)
-        .def_property_readonly("preserves_count", &SOMTParser::Uir::Fidelity::preservesCount)
-        .def_property_readonly("count_status", [](const SOMTParser::Uir::Fidelity& f) {
-            return std::string(SOMTParser::Uir::countStatusName(f.count_status));
-        })
-        .def_readonly("bounds", &SOMTParser::Uir::Fidelity::bounds);
-
-    py::class_<SOMTParser::Uir::EncodingChoice>(m, "EncodingChoice",
-            "One encoding decision, its fidelity, and why it was taken")
-        .def_readonly("site", &SOMTParser::Uir::EncodingChoice::site)
-        .def_readonly("unified_op", &SOMTParser::Uir::EncodingChoice::unified_op)
-        .def_readonly("strategy", &SOMTParser::Uir::EncodingChoice::strategy)
-        .def_readonly("fidelity", &SOMTParser::Uir::EncodingChoice::fidelity)
-        .def_readonly("count_evidence", &SOMTParser::Uir::EncodingChoice::count_evidence)
-        .def_readonly("rationale", &SOMTParser::Uir::EncodingChoice::rationale);
-
-    py::class_<SOMTParser::Uir::Stats>(m, "Stats", "Size and timing of one translation")
-        .def_readonly("num_vars", &SOMTParser::Uir::Stats::num_vars)
-        .def_readonly("num_constraints", &SOMTParser::Uir::Stats::num_constraints)
-        .def_readonly("num_objectives", &SOMTParser::Uir::Stats::num_objectives)
-        .def_readonly("num_smt_nodes", &SOMTParser::Uir::Stats::num_smt_nodes)
-        .def_readonly("parse_ms", &SOMTParser::Uir::Stats::parse_ms)
-        .def_readonly("typecheck_ms", &SOMTParser::Uir::Stats::typecheck_ms)
-        .def_readonly("passes_ms", &SOMTParser::Uir::Stats::passes_ms)
-        .def_readonly("lower_ms", &SOMTParser::Uir::Stats::lower_ms)
-        .def_readonly("semantics_ms", &SOMTParser::Uir::Stats::semantics_ms)
-        .def_readonly("translate_ms", &SOMTParser::Uir::Stats::translate_ms);
-
-    py::class_<SOMTParser::Uir::Provenance>(m, "Provenance")
-        .def_readonly("somtparser_version", &SOMTParser::Uir::Provenance::somtparser_version)
-        .def_readonly("language_id", &SOMTParser::Uir::Provenance::language_id)
-        .def_readonly("language_version", &SOMTParser::Uir::Provenance::language_version)
-        .def_readonly("profile_id", &SOMTParser::Uir::Provenance::profile_id)
-        .def_readonly("profile_content_hash", &SOMTParser::Uir::Provenance::profile_content_hash)
-        .def_readonly("target_dialect", &SOMTParser::Uir::Provenance::target_dialect);
-
-    py::enum_<SOMTParser::Uir::Severity>(m, "Severity")
-        .value("NOTE", SOMTParser::Uir::Severity::NOTE)
-        .value("WARNING", SOMTParser::Uir::Severity::WARNING)
-        .value("ERROR", SOMTParser::Uir::Severity::ERROR);
-
-    py::class_<SOMTParser::Uir::Diagnostic>(m, "Diagnostic")
-        // TranslationReport.warnings carries ERROR-severity entries too (see
-        // Parser::parseAny), so severity is what tells them apart.
-        .def_readonly("severity", &SOMTParser::Uir::Diagnostic::severity)
-        .def_readonly("code", &SOMTParser::Uir::Diagnostic::code)
-        .def_readonly("message", &SOMTParser::Uir::Diagnostic::message)
-        .def_property_readonly("file",
-            [](const SOMTParser::Uir::Diagnostic& d) { return d.loc.file; })
-        .def_property_readonly("line",
-            [](const SOMTParser::Uir::Diagnostic& d) { return d.loc.line; })
-        .def_property_readonly("column",
-            [](const SOMTParser::Uir::Diagnostic& d) { return d.loc.column; });
-
-    py::class_<SOMTParser::Uir::TranslationReport>(m, "TranslationReport")
-        .def_property_readonly("fidelity", &SOMTParser::Uir::TranslationReport::fidelity)
-        .def_property_readonly("provenance", &SOMTParser::Uir::TranslationReport::provenance)
-        .def_property_readonly("choices", &SOMTParser::Uir::TranslationReport::choices)
-        .def_property_readonly("warnings", &SOMTParser::Uir::TranslationReport::warnings)
-        .def_property_readonly("stats", &SOMTParser::Uir::TranslationReport::stats)
-        .def_property_readonly("hir_feature_counts",
-                               &SOMTParser::Uir::TranslationReport::featureCounts)
-        .def("to_json", &SOMTParser::Uir::TranslationReport::toJson);
-
-    py::class_<SOMTParser::Uir::Hir::SetSolverRequirements>(m, "SetSolverRequirements")
-        .def_readonly("has_sets", &SOMTParser::Uir::Hir::SetSolverRequirements::has_sets)
-        .def_readonly("has_quantifiers", &SOMTParser::Uir::Hir::SetSolverRequirements::has_quantifiers)
-        .def_readonly("infinite_or_unknown_carrier", &SOMTParser::Uir::Hir::SetSolverRequirements::infinite_or_unknown_carrier)
-        .def_readonly("non_integer_carrier", &SOMTParser::Uir::Hir::SetSolverRequirements::non_integer_carrier);
-
-    py::class_<SOMTParser::Translation>(m, "Translation")
-        .def_property_readonly("ok", &SOMTParser::Translation::ok)
-        .def_property_readonly("parser", &SOMTParser::Translation::parser)
-        .def_property_readonly("has_parser", &SOMTParser::Translation::hasParser)
-        .def_property_readonly("uses_packed_smt_stream",
-                               &SOMTParser::Translation::usesPackedSmtStream)
-        .def_property_readonly("report", [](py::object self) -> py::object {
-            const auto& t = self.cast<const SOMTParser::Translation&>();
-            return t.hasDetails()
-                ? py::cast(&t.report(), py::return_value_policy::reference_internal, self)
-                : py::none();
-        })
-        .def_property_readonly("smt2", &SOMTParser::Translation::smt2)
-        .def_property_readonly("exit_code", &SOMTParser::Translation::exitCode)
-        .def_property_readonly("details", &SOMTParser::Translation::hasDetails)
-        .def_property_readonly("diagnostics", &SOMTParser::Translation::diagnosticText)
-        .def_property_readonly("set_solver_requirements", &SOMTParser::Translation::setSolverRequirements)
-        .def_property_readonly("diagnostic_items",
-            [](const SOMTParser::Translation& t) { return t.diagnostics().all(); })
-        .def("to_smt2",
-             [](const SOMTParser::Translation& t, SOMTParser::Lower::OmtDialect d) {
-                 return t.toSmt2(d);
-             },
-             py::arg("dialect") = SOMTParser::Lower::OmtDialect::SmtLib2025)
-        .def("_native_smt2", &SOMTParser::Translation::toParserSmt2,
-             "Native theory terms with minimize/maximize commands; no Z3 theory lowering.")
-        .def("write_smt2",
-             [](const SOMTParser::Translation& t, const std::string& path,
-                SOMTParser::Lower::OmtDialect d) {
-                 t.writeSmt2(path, d);
-             },
-             py::arg("path"),
-             py::arg("dialect") = SOMTParser::Lower::OmtDialect::SmtLib2025,
-             "Write the SMT/OMT script directly to a file without building a full script string.");
-
-    m.def("languages", []() {
-        std::vector<std::string> out;
-        for (const auto* l : SOMTParser::Lang::LanguageRegistry::instance().all()) {
-            out.push_back(l->id());
-        }
-        return out;
-    }, "Ids of every registered input language");
-
-    m.def("profiles", []() { return SOMTParser::Uir::EncodingProfile::builtinIds(); },
-          "Ids of the built-in encoding profiles");
-
-    m.def("coverage", [](const std::string& id) {
-        auto* l = SOMTParser::Lang::LanguageRegistry::instance().byId(id);
-        if (l == nullptr) {
-            throw py::value_error("no such language: " + id);
-        }
-        py::dict d;
-        d["supported"] = l->coverage().supported;
-        d["total"] = l->coverage().total;
-        d["missing"] = l->coverage().missing;
-        return d;
-    }, py::arg("language"));
-
-    m.def("source_semantics", [](const std::string& id) {
-        const Sem::SourceSemanticSpec spec = Sem::sourceSemanticSpec(id);
-        if (!spec.valid()) {
-            throw py::value_error("no semantic specification for language: " + id);
-        }
-        return spec;
-    }, py::arg("language"),
-       "Return the source Institution, decision problem, and SMT embedding contract");
-
     // ===== Parser =====
     py::class_<Parser, std::shared_ptr<Parser>> parser(m, "Parser",
         "SMT-LIB2 / OMT parser, expression builder and formula toolbox");
@@ -908,28 +583,7 @@ PYBIND11_MODULE(_somtparser, m) {
             if (!model) throw BindParseError("failed to parse model");
             return model;
         }, py::arg("text"), py::arg("only_declared") = false,
-           "Parse solver model output (e.g. cvc5/z3 get-model text) into a Model")
-        .def("parse_any",
-             [](SOMTParser::Parser& p, const std::string& path) {
-                 return p.parseAny(path);
-             },
-             py::arg("path"),
-             "Detect the input language and translate it into this parser")
-        // Copied, not referenced. pybind11 defaults properties to
-        // return_value_policy::reference_internal, which keeps the *Parser*
-        // alive but not the shared_ptr that owns the report -- and
-        // Parser::last_report_ is that sole owner, reassigned by the next
-        // parse_any(). Python was left holding a pointer into freed memory:
-        //     r = p.last_translation_report
-        //     p.parse_any("b.mzn")
-        //     r.to_json()          # heap-use-after-free, interpreter SIGSEGV
-        // A TranslationReport is a value object of a few vectors and maps, so
-        // copying it is cheap and makes the returned object independent of any
-        // later call, which is what a caller inspecting a past translation
-        // wants anyway.
-        .def_property_readonly("last_translation_report",
-                               &SOMTParser::Parser::lastTranslationReport,
-                               py::return_value_policy::copy);
+           "Parse solver model output (e.g. cvc5/z3 get-model text) into a Model");
 
     // ---- Results / contents ----
     parser
@@ -1840,13 +1494,6 @@ PYBIND11_MODULE(_somtparser, m) {
         .def("dump_smt2", [](Parser& p, const std::string& filename) {
             return p.dumpSMT2(filename);
         }, py::arg("filename"), "Write the parsed content to an SMT-LIB2 file")
-        .def("dump_smt2", [](Parser& p, SOMTParser::Lower::OmtDialect dialect) {
-            return p.dumpSMT2(dialect);
-        }, py::arg("dialect"), "Export the current state in an OMT dialect")
-        .def("dump_smt2", [](Parser& p, const std::string& filename,
-                            SOMTParser::Lower::OmtDialect dialect) {
-            return p.dumpSMT2(filename, dialect);
-        }, py::arg("filename"), py::arg("dialect"))
         .def("__repr__", [](Parser& p) {
             return "<Parser with " + std::to_string(p.getAssertions().size()) +
                    " assertions>";
@@ -1870,15 +1517,5 @@ PYBIND11_MODULE(_somtparser, m) {
     }, py::arg("path"), "Parse an SMT-LIB2/OMT file and return the Parser");
 
     m.attr("__version__") = "0.2.0";
-    SomtPythonHir::bind(m);
-    SomtPythonPlanningNumeric::bind(m);
-    SomtPythonPlanningTrajectory::bind(m);
-    SomtPythonPlanningDerived::bind(m);
-    SomtPythonPlanningTemporal::bind(m);
-    SomtPythonPlanningTimedInitial::bind(m);
-    SomtPythonPlanningContinuous::bind(m);
-    SomtPythonPlanningObjects::bind(m);
-    SomtPythonModule::bind(m);
-    SomtPythonTranslate::bind(m);
 
 }

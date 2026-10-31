@@ -1,5 +1,0 @@
-(set-logic QF_LIA)
-(declare-fun x () Int)
-(minimize x)
-(maximize x)
-(check-sat)

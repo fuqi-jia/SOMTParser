@@ -1,5 +1,0 @@
-c A clause spanning several lines, terminated by 0. Legal DIMACS.
-p cnf 4 1
-1 2
-3 -4
-0

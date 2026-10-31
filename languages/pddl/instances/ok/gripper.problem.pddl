@@ -1,5 +1,0 @@
-(define (problem p1)
-  (:domain gripper)
-  (:objects ball1 ball2)
-  (:init (at ball1) (at ball2))
-  (:goal (holding ball1)))

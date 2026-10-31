@@ -1,5 +1,4 @@
 #include "somtparser/frontend/parser.h"
-#include "somtparser/lowering/omt_emitter.h"
 
 #include <sstream>
 #include <stdexcept>
@@ -35,18 +34,20 @@ std::string softWeightToken(const std::shared_ptr<DAGNode>& weight) {
     return token;
 }
 
-Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
-    namespace H = Uir::Hir;
-    using Lower::RenderedObjective;
-    using Lower::RenderedObjectiveKind;
+std::string Parser::renderSMT2Objectives() {
+    enum class EventKind { Minimize, Maximize, Soft };
+    struct Event {
+        EventKind kind = EventKind::Minimize;
+        std::string term, weight, group, comparison;
+    };
     const bool selected_gomt = static_cast<bool>(getObjectiveManager()->getSelectedGomtObjective());
     std::vector<MetaObjectivePtr> objectives;
     for (const auto& objective : getObjectives()) objectives.push_back(objective);
-    H::ObjectiveCombination combination = H::ObjectiveCombination::LEXICOGRAPHIC;
+    OPT_KIND combination = OPT_KIND::OPT_LEX_OPTIMIZE;
     const auto priority = getOptions()->options.find("opt.priority");
     if (priority != getOptions()->options.end()) {
-        if (priority->second == "pareto") combination = H::ObjectiveCombination::PARETO;
-        else if (priority->second == "box") combination = H::ObjectiveCombination::BOX;
+        if (priority->second == "pareto") combination = OPT_KIND::OPT_PARETO_OPTIMIZE;
+        else if (priority->second == "box") combination = OPT_KIND::OPT_BOX_OPTIMIZE;
         else if (priority->second != "lex") {
             throw std::runtime_error("dumpSMT2: unsupported opt.priority " + priority->second);
         }
@@ -71,11 +72,11 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
                        "dumpSMT2: independent and compound objectives need an explicit combination");
         }
         switch (compound->getObjectiveKind()) {
-        case OPT_KIND::OPT_LEX_OPTIMIZE: combination = H::ObjectiveCombination::LEXICOGRAPHIC; break;
-        case OPT_KIND::OPT_PARETO_OPTIMIZE: combination = H::ObjectiveCombination::PARETO; break;
-        case OPT_KIND::OPT_BOX_OPTIMIZE: combination = H::ObjectiveCombination::BOX; break;
-        case OPT_KIND::OPT_MINMAX: combination = H::ObjectiveCombination::MINMAX; break;
-        case OPT_KIND::OPT_MAXMIN: combination = H::ObjectiveCombination::MAXMIN; break;
+        case OPT_KIND::OPT_LEX_OPTIMIZE: combination = OPT_KIND::OPT_LEX_OPTIMIZE; break;
+        case OPT_KIND::OPT_PARETO_OPTIMIZE: combination = OPT_KIND::OPT_PARETO_OPTIMIZE; break;
+        case OPT_KIND::OPT_BOX_OPTIMIZE: combination = OPT_KIND::OPT_BOX_OPTIMIZE; break;
+        case OPT_KIND::OPT_MINMAX: combination = OPT_KIND::OPT_MINMAX; break;
+        case OPT_KIND::OPT_MAXMIN: combination = OPT_KIND::OPT_MAXMIN; break;
         default: throw std::runtime_error("dumpSMT2: invalid compound objective");
         }
         objectives = std::move(members);
@@ -86,7 +87,7 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
         dumpSMTLIB2Shared(term, out);
         return out.str();
     };
-    std::vector<RenderedObjective> events;
+    std::vector<Event> events;
     std::vector<std::string> soft_groups(context_.soft_assertions.size());
     for (const auto& group : context_.soft_assertion_groups) {
         for (const size_t index : group.second) {
@@ -104,18 +105,17 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
         if (selected_gomt && objective && objective->isMaxSAT()) {
             const auto& soft = getObjectiveManager()->getGomtSoftAssertions(objective->getGroupID());
             for (const auto& constraint : soft) {
-                RenderedObjective event;
-                event.kind = RenderedObjectiveKind::Soft;
+                Event event;
+                event.kind = EventKind::Soft;
                 event.term = text(constraint.node);
                 event.weight = softWeightToken(constraint.weight);
                 event.group = objective->getGroupID();
                 events.push_back(std::move(event));
             }
             if (soft.empty()) {
-                RenderedObjective event;
-                event.kind = RenderedObjectiveKind::Minimize;
+                Event event;
+                event.kind = EventKind::Minimize;
                 event.term = "0";
-                event.name = objective->getGroupID();
                 events.push_back(std::move(event));
             }
             return;
@@ -123,8 +123,8 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
         if (objective && objective->isMaxSAT()) {
             for (size_t i = 0; i < soft_groups.size(); ++i) {
                 if (soft_groups[i] != objective->getGroupID()) continue;
-                RenderedObjective event;
-                event.kind = RenderedObjectiveKind::Soft;
+                Event event;
+                event.kind = EventKind::Soft;
                 event.term = text(context_.soft_assertions[i]);
                 event.weight = softWeightToken(context_.soft_weights[i]);
                 event.group = soft_groups[i];
@@ -136,12 +136,6 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
                    "dumpSMT2: objective is not an arithmetic minimize/maximize goal");
         const auto& term = objective->getObjectiveTerm();
         condAssert(term && !term->isNull(), "dumpSMT2: missing objective term");
-        // Keep the default-order export domain aligned with the GOMT reader.
-        if (dialect == Lower::OmtDialect::Gomt) {
-            const auto& sort = term->getSort();
-            condAssert(sort && (sort->isInt() || sort->isReal() || sort->isBv() || sort->isFp()),
-                       "dumpSMT2: GOMT export currently supports only Int/Real/BV/FP objective terms");
-        }
         condAssert(objective->getEpsilon() == NodeManager::NULL_NODE
                    && objective->getM() == NodeManager::NULL_NODE,
                    "dumpSMT2: explicit epsilon/M objectives need a generalized order encoding");
@@ -149,11 +143,17 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
         condAssert(comparison == getDefaultCompareOperator(getOptions()->logic, objective->getObjectiveKind())
                    || comparison == getCompareOperatorForObjectiveTerm(term, objective->getObjectiveKind()),
                    "dumpSMT2: non-default objective comparison needs an explicit order encoding");
-        RenderedObjective event;
-        event.kind = objective->isMinimize() ? RenderedObjectiveKind::Minimize
-                                            : RenderedObjectiveKind::Maximize;
+        Event event;
+        event.kind = objective->isMinimize() ? EventKind::Minimize
+                                            : EventKind::Maximize;
         event.term = text(term);
-        if (selected_gomt) event.name = objective->getGroupID();
+        // GOMT chooses its default order from the objective sort, whereas
+        // native minimize/maximize commands choose it from the script logic.
+        // Preserve that order when exporting a mixed-theory script.
+        if (comparison != getDefaultCompareOperator(getOptions()->logic,
+                                                    objective->getObjectiveKind())) {
+            event.comparison = kindToString(getCompareNodeKind(comparison));
+        }
         events.push_back(std::move(event));
     };
     size_t next = 0;
@@ -165,8 +165,8 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
                    "dumpSMT2: invalid soft/objective order metadata");
         while (next < position) append_objective(objectives[next++]);
         if (explicitly_activated.count(soft_groups[i])) continue;
-        RenderedObjective event;
-        event.kind = RenderedObjectiveKind::Soft;
+        Event event;
+        event.kind = EventKind::Soft;
         event.term = text(context_.soft_assertions[i]);
         if (i < context_.soft_weights.size() && context_.soft_weights[i]) {
             // Node names canonicalize 3.5 to 7/2; vendor :weight needs a
@@ -177,25 +177,30 @@ Lower::RenderedOmt Parser::renderSMT2Objectives(Lower::OmtDialect dialect) {
         events.push_back(std::move(event));
     }
     while (next < objectives.size()) append_objective(objectives[next++]);
-    if (events.size() <= 1 && priority == getOptions()->options.end()
-        && combination == H::ObjectiveCombination::LEXICOGRAPHIC) {
-        combination = H::ObjectiveCombination::SINGLE;
+    // The native snapshot uses assert-soft and minimize/maximize commands.
+    // Target-specific dialect conversion belongs to develop.
+    condAssert(combination != OPT_KIND::OPT_MINMAX && combination != OPT_KIND::OPT_MAXMIN,
+               "dumpSMT2: minmax/maxmin needs an explicit generalized order encoding");
+    std::ostringstream out;
+    if (priority != getOptions()->options.end() || events.size() > 1
+        || combination != OPT_KIND::OPT_LEX_OPTIMIZE) {
+        const char* name = combination == OPT_KIND::OPT_PARETO_OPTIMIZE ? "pareto"
+                         : combination == OPT_KIND::OPT_BOX_OPTIMIZE ? "box" : "lex";
+        out << "(set-option :opt.priority " << name << ")\n";
     }
-    // None is a deliberate feasibility abstraction on Translation, not a
-    // lossless dump of a parser's optimization state.
-    condAssert(dialect != Lower::OmtDialect::None || events.empty(),
-               "dumpSMT2: a feasibility-only dialect would discard optimization goals");
-    std::vector<std::string> reserved;
-    if (dialect == Lower::OmtDialect::SmtLib2025 || dialect == Lower::OmtDialect::OptiMathSAT) {
-        for (const auto& var : getVariables()) reserved.push_back(var->getName());
-        for (const auto& fun : getFunctions()) reserved.push_back(fun->getName());
+    for (const auto& event : events) {
+        if (event.kind == EventKind::Soft) {
+            out << "(assert-soft " << event.term << " :weight "
+                << (event.weight.empty() ? "1" : event.weight);
+            if (!event.group.empty()) out << " :id " << smtSymbol(event.group);
+        } else {
+            out << '(' << (event.kind == EventKind::Minimize ? "minimize" : "maximize")
+                << ' ' << event.term;
+            if (!event.comparison.empty()) out << " :comp " << event.comparison;
+        }
+        out << ")\n";
     }
-    Uir::Diagnostics diagnostics;
-    auto result = Lower::emitRenderedObjectives(events, combination, dialect, diagnostics, reserved);
-    if (diagnostics.hasErrors()) {
-        throw std::runtime_error("dumpSMT2: " + diagnostics.all().front().message);
-    }
-    return result;
+    return out.str();
 }
 
 } // namespace SOMTParser

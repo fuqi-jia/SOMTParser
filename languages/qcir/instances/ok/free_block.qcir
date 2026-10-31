@@ -1,5 +1,0 @@
-#QCIR-G14
-free(a, b)
-exists(x)
-output(g1)
-g1 = and(a, x, -b)

@@ -1,5 +1,4 @@
 #include "somtparser/frontend/parser.h"
-#include "somtparser/lowering/omt_emitter.h"
 #include "test_helpers.h"
 
 #include <initializer_list>
@@ -151,21 +150,18 @@ static void testExactDecimalWeights() {
         VERIFY(parser.parseStr(std::string("(declare-const p Bool)(assert-soft p :id cost :weight ")
                                + weight + ")(check-sat)"));
         const auto original = parser.getSoftWeights()[0]->getValue()->getNumberValue();
-        for (const auto dialect : {Lower::OmtDialect::Z3, Lower::OmtDialect::OptiMathSAT,
-                                   Lower::OmtDialect::Gomt}) {
-            const auto output = parser.dumpSMT2(dialect);
-            VERIFY(output.find(std::string(":weight ") + weight) != std::string::npos);
-            Parser reader;
-            VERIFY(reader.parseStr(output));
-            VERIFY(reader.getSoftWeights().size() == 1);
-            VERIFY(reader.getSoftWeights()[0]->getValue()->getNumberValue() == original);
-            VERIFY(reader.dumpSMT2(dialect) == output);
-        }
+        const auto output = parser.dumpSMT2();
+        VERIFY(output.find(std::string(":weight ") + weight) != std::string::npos);
+        Parser reader;
+        VERIFY(reader.parseStr(output));
+        VERIFY(reader.getSoftWeights().size() == 1);
+        VERIFY(reader.getSoftWeights()[0]->getValue()->getNumberValue() == original);
+        VERIFY(reader.dumpSMT2() == output);
         const auto module = parser.dumpSMT2Module();
         VERIFY(module.find(std::string(":weight ") + weight) != std::string::npos);
-        Parser reader;
-        VERIFY(reader.parseStr(module));
-        VERIFY(reader.getSoftWeights()[0]->getValue()->getNumberValue() == original);
+        Parser module_reader;
+        VERIFY(module_reader.parseStr(module));
+        VERIFY(module_reader.getSoftWeights()[0]->getValue()->getNumberValue() == original);
     }
     Parser nondecimal;
     auto p = nondecimal.mkVarBool("p");

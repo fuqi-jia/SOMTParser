@@ -1,5 +1,0 @@
-(define (problem fall_hold_after_soft) (:domain til-endpoint)
-  (:init (g) (at 10 (p)) (at 12 (not (p))))
-  (:goal (g))
-  (:constraints (preference late (hold-after 5 (p))))
-  (:metric minimize (+ total-time (* 7 (is-violated late)))))

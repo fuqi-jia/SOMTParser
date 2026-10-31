@@ -11,10 +11,8 @@ option(SOMTPARSER_BUILD_TESTS "Build SOMTParser tests" OFF)
 option(SOMTPARSER_WARNINGS_AS_ERRORS "Treat SOMTParser warnings as errors" OFF)
 option(SOMTPARSER_ENABLE_TIMING "Enable the timing profiler" OFF)
 option(BUILD_PYTHON "Build the Python bindings module" OFF)
-option(SOMTPARSER_BUILD_LANGUAGES "Build the multi-language frontend library" ON)
-option(SOMTPARSER_BUILD_TOOLS "Build command line tools" OFF)
 
-# Apply to every project target (core, languages, tools, tests and bindings),
+# Apply to every project target (core, tests and bindings),
 # without exporting compiler policy to applications linking the library.
 if(SOMTPARSER_WARNINGS_AS_ERRORS)
     if(MSVC)
@@ -87,14 +85,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wno-unused-local-typedefs)
 endif()
 
-if(SOMTPARSER_BUILD_LANGUAGES)
-    add_subdirectory(languages)
-endif()
-
-if(SOMTPARSER_BUILD_TOOLS AND SOMTPARSER_BUILD_LANGUAGES)
-    add_subdirectory(tools)
-endif()
-
 if(SOMTPARSER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(test)
@@ -130,51 +120,21 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/SOMTParser)
 
 if(BUILD_PYTHON)
-    # The Python module is not core-only: python/bindings.cpp includes
-    # <somtparser/languages/register_all.h>, a header that exists solely in the
-    # languages target's binary include dir, and python/somtparser/__init__.py
-    # unconditionally imports translate/languages/profiles/coverage. There is no
-    # build flavour of the package that advertises less, so a module built
-    # without languages would either fail to compile or import an API backed by
-    # an empty language registry. Reject the combination here rather than let it
-    # fail deep in a build log or, worse, at runtime.
-    if(NOT SOMTPARSER_BUILD_LANGUAGES)
-        message(FATAL_ERROR
-            "BUILD_PYTHON=ON requires SOMTPARSER_BUILD_LANGUAGES=ON: the Python "
-            "module exposes the multi-language frontend API "
-            "(somtparser.translate / languages / profiles / coverage) and "
-            "includes <somtparser/languages/register_all.h>, which only the "
-            "languages target generates.")
-    endif()
     find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
-    # Keep registration templates in separate translation units. Combining all
-    # API families in one unit makes compiler memory grow with the entire API.
-    # NO_EXTRAS disables pybind11's automatic LTO for this wrapper module only.
-    pybind11_add_module(_somtparser NO_EXTRAS
-        python/bindings.cpp
-        python/translate_bindings.cpp
-        python/hir_bindings.cpp
-        python/planning_numeric_bindings.cpp
-        python/planning_trajectory_bindings.cpp
-        python/planning_derived_bindings.cpp
-        python/planning_temporal_bindings.cpp
-        python/planning_timed_initial_bindings.cpp
-        python/planning_continuous_bindings.cpp
-        python/planning_objects_bindings.cpp
-        python/module_bindings.cpp
-    )
+    # Disable automatic LTO for the registration wrapper.
+    pybind11_add_module(_somtparser NO_EXTRAS python/bindings.cpp)
     set_property(TARGET _somtparser PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
     # pybind11 registration templates can exceed COFF's 65,279-section limit
-    # even with bindings split into translation units. Use extended objects on
+    # in the wrapper. Use extended objects on
     # MSVC; this changes object storage, not warning policy or generated APIs.
     if(MSVC)
         target_compile_options(_somtparser PRIVATE /bigobj)
     endif()
-    # Numeric/frontend execution remains in the normally optimized core and
-    # language libraries; aggressive optimization of registration glue is costly.
+    # Numeric/frontend execution remains in the normally optimized core library;
+    # aggressive optimization of registration glue is costly.
     target_compile_options(_somtparser PRIVATE
         $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O1>)
-    target_link_libraries(_somtparser PRIVATE SOMTParser::languages)
+    target_link_libraries(_somtparser PRIVATE SOMTParser::somtparser)
     install(TARGETS _somtparser LIBRARY DESTINATION . COMPONENT Python)
 endif()

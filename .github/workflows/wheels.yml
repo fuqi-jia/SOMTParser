@@ -127,19 +127,14 @@ jobs:
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
             python -W error -m delvewheel repair -w {dest_dir}
             --add-path "%SOMTPARSER_MSVC_RUNTIME%;C:/vcpkg/installed/x64-windows/bin" {wheel}
-          CIBW_TEST_REQUIRES: "pytest jsonschema>=4.18 z3-solver==5.1.0.0"
+          CIBW_TEST_REQUIRES: "pytest z3-solver==5.1.0.0"
           # Full regression runs on Python 3.9/3.12 in ci.yml. Each wheel
           # validates its installed extension and representative public APIs.
           CIBW_TEST_COMMAND: >-
             python -W error -m pytest -q
             "{project}/test/python/test_parse.py" "{project}/test/python/test_node.py"
-            "{project}/test/python/test_model_eval.py" "{project}/test/python/test_hir_api.py"
-            "{project}/test/python/test_dump_omt_roundtrip.py" "{project}/test/python/test_fp_bv_rounding.py"
-            "{project}/test/python/test_nl_repair.py" "{project}/test/python/test_nl_datasets.py"
-            "{project}/test/python/test_essence_constant_precedence.py"
-            "{project}/test/python/test_z3_set_carrier_index_bounds.py"
-            "{project}/test/python/test_file_conversion_api.py"
-            "{project}/test/python/test_translate_details.py"
+            "{project}/test/python/test_model_eval.py" "{project}/test/python/test_omt.py"
+            "{project}/test/python/test_fp_bv_rounding.py"
 
       - uses: actions/upload-artifact@v7
         with:

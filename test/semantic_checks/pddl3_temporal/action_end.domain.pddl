@@ -1,1 +1,0 @@
-(define (domain d) (:requirements :adl :preferences :constraints :durative-actions :fluents) (:types item) (:constants i j - item) (:predicates (p) (q)) (:durative-action a :parameters () :duration (= ?duration 2) :condition (preference pref (at end (p))) :effect (and (at start (p)) (at end (not (p))) (at end (q)))))

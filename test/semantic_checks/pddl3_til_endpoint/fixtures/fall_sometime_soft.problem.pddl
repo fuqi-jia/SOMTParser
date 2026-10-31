@@ -1,5 +1,0 @@
-(define (problem fall_sometime_soft) (:domain til-endpoint)
-  (:init (g) (at 10 (p)) (at 12 (not (p))))
-  (:goal (g))
-  (:constraints (preference late (sometime (p))))
-  (:metric minimize (+ total-time (* 7 (is-violated late)))))

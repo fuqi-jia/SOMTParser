@@ -1,7 +1,0 @@
-$ The where clause is a validity condition on the .param file, so a parameter
-$ that violates it makes the pair invalid rather than the model unsatisfiable.
-language ESSENCE' 1.0
-given n : int(1..)
-where n > 10
-find x : int(1..n)
-such that x = 1

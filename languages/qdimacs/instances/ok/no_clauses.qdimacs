@@ -1,4 +1,0 @@
-c The empty conjunction is TRUE -- the opposite polarity from the empty clause,
-c and the pair is easy to get backwards.
-p cnf 1 0
-e 1 0

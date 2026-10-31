@@ -1,2 +1,0 @@
-/* The outer selection must also filter this included subtree. */
-include('thf-include-leaf.ax').

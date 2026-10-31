@@ -1,1 +1,0 @@
-(define (domain numeric) (:requirements :adl :fluents) (:predicates (done)) (:functions (x) (y)) (:action step :parameters () :precondition (not (> (x) 0)) :effect (and (done) )))

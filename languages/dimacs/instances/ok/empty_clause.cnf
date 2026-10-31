@@ -1,7 +1,0 @@
-c dimacs-cnf.md §4.1. The empty clause is FALSE, and mkOp(OR, {}) THROWS rather
-c than producing it -- condAssert survives -DNDEBUG, so an uncaught one on this
-c legal input would be reported as E_INTERNAL, under the wrong bucket of the
-c failure-cause breakdown. This instance is unsatisfiable, which is an answer.
-p cnf 2 2
-1 2 0
-0

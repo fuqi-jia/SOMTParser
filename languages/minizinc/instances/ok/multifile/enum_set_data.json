@@ -1,5 +1,0 @@
-{
-  "allowed": [{"set": ["Blue", "Blue"]}, {"set": []}, {"set": [{"e": "Red"}]}],
-  "selected": {"set": ["Red", "Blue"]},
-  "label": "Red"
-}

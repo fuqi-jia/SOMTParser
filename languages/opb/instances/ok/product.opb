@@ -1,5 +1,0 @@
-* A product of literals is a conjunction, and over {0,1} integers that is
-* exactly their arithmetic product -- which is why the Boolean domain of the
-* first obligation has to be materialised. Without the [0,1] bounds this
-* multiplication means something else entirely.
-1 x1 x2 +1 x3 >= 1 ;

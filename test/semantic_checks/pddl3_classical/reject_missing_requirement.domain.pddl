@@ -1,7 +1,0 @@
-(define (domain d) (:requirements :adl :constraints )
-(:predicates (p) (q))
-(:action setp :parameters () :effect (p))
-(:action clearp :parameters () :effect (not (p)))
-(:action setq :parameters () :effect (q))
-(:action clearq :parameters () :effect (not (q)))
-)

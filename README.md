@@ -8,10 +8,12 @@
 
 ## Design Overview
 
-The multi-language constraint model lives in `hir/`; its translation pipeline
-lives in `translation/`. The existing SMT expression DAG remains in `ir/`.
-See [the module layout](docs/source-layout.md) for their responsibilities and
-current header paths.
+The native frontend parses SMT-LIB/OMT into the typed SMT expression DAG.
+See [the source layout](docs/source-layout.md) for module responsibilities.
+
+`main` contains the SMT parser and core maintenance. Future language frontends,
+HIR, translation and natural-language modeling are maintained on
+[`develop`](https://github.com/fuqi-jia/SOMTParser/tree/develop).
 
 - **Frontend**: Command and term parsing, type checking, OMT-oriented input, and API-level expression construction feeding the same IR pipeline.
 - **IR core**: A unified typed DAG representation with structure sharing and canonicalization via `NodeManager`; equal subterms are stored once.
@@ -20,31 +22,20 @@ current header paths.
 
 ## Key Features
 
-- **SMT-LIB2 support**: Parsing and typed representations for multiple SMT-LIB2 logics and theories; [the reader contract](docs/languages/smtlib2.md) describes the translation interface.
+- **SMT-LIB2 support**: Parsing and typed representations for multiple SMT-LIB2 logics and theories.
 - **FloatingPoint dialect**: By default the parser accepts small **lenient** extensions (e.g. unary `fp.sqrt` canonicalized to `(fp.sqrt RNE …)` in the IR, and aliases like `fp.=`). For **stricter** surface syntax aligned with the official FloatingPoint theory, enable `strict_smtlib_fp` (`Parser::setStrictSmtlib(true)` or `GlobalOptions::setOption("strict_smtlib_fp", "true")`).
 - **Multi-theory**: Booleans, integer/real arithmetic, bitvectors, IEEE-754 floating point, strings and regular expressions, arrays.
 - **Typed DAG IR**: Structure sharing and canonicalization for a more compact representation and easier analysis/transformation.
 - **OMT support**: Parses intermediate syntax such as `assert-soft`, `maximize`/`minimize`, `define-objective`, `lex-optimize`/`pareto-optimize`/`box-optimize`, `maxsat`/`minsat`, managed by `ObjectiveManager`.
 - **Programmatic construction**: Build terms and formulas via API, sharing the same IR as parsed input.
-- **Natural-language modeling (Python)**: Construct HIR candidates with the live schema and constructor catalog, repair them using located feedback, and compile the selected snapshot to SMT-LIB. The [SOMTParser skill](skills/somtparser-nl-hir/SKILL.md) uses the public API directly; an external model service and MCP are optional. See [the API](docs/natural-language.md) and [dataset/model contracts](docs/nl-datasets-and-model.md).
 - **Formula conversion**: NNF, CNF, DNF; CNF supports theory-atom-to-Boolean abstraction and bidirectional mapping for CDCL(T)-style reasoning.
 - **Model interface**: Parse solver-produced model output and evaluate formulas/terms under full or partial models.
 - **Rewriting and traversal**: Extensible rewrite rules, kind-based dispatcher, visit-once traversal over the DAG.
 
-Optional language frontends translate constraint models through a shared,
-typed HIR. The [language documentation](docs/languages/smtlib2.md) describes
-accepted syntax, lowering behavior and semantic contracts. Natural-language
-modeling supports direct SMT-LIB, HIR and hybrid skill routes; model services
-are configured by the caller.
-
-Whole-problem SMT/OMT output supports Z3, OptiMathSAT and GOMT dialects. See
-[translation output](docs/translation-output.md), [Python modeling APIs](docs/natural-language.md)
-and [API migration notes](docs/api-migration.md).
-
 ## System Requirements
 
 - C++17 compatible compiler
-- CMake 3.10+
+- CMake 3.16+
 - GMP (GNU Multiple Precision Arithmetic Library)
 - MPFR (GNU Multiple Precision Floating-Point Reliable Library)
 
@@ -123,8 +114,7 @@ git clone https://github.com/fuqi-jia/SOMTParser.git
 cd SOMTParser
 
 # Configure and build out of tree
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DSOMTPARSER_BUILD_TOOLS=ON
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 
 # Install to a selected prefix
@@ -170,9 +160,7 @@ You can also use the provided test script from the project root:
 |--------|-------------|---------|
 | `BUILD_SHARED_LIBS` | Build a shared rather than static library | OFF |
 | `SOMTPARSER_BUILD_TESTS` | Build and register test executables with CTest | OFF |
-| `SOMTPARSER_BUILD_LANGUAGES` | Build the language frontends and translation pipeline | ON |
-| `SOMTPARSER_BUILD_TOOLS` | Build optional PDDL and semantic-check helpers | OFF |
-| `BUILD_PYTHON` | Build the Python extension; requires the language frontends | OFF |
+| `BUILD_PYTHON` | Build the native SMT Python extension | OFF |
 | `SOMTPARSER_WARNINGS_AS_ERRORS` | Treat warnings in SOMTParser sources as errors | OFF |
 | `SOMTPARSER_ENABLE_TIMING` | Enable the timing profiler | OFF |
 
@@ -217,29 +205,6 @@ parsing, expression-building, transformation, model-evaluation and OMT API.
 ```bash
 pip install somtparser
 ```
-
-Convert a model through the library API:
-
-```python
-import somtparser as sp
-
-result = sp.translate("model.mzn", language="minizinc", dialect="z3")
-if result.exit_code == 0:
-    smt2 = result.smt2
-else:
-    print(result.diagnostics)
-```
-
-`translate` also accepts companion data files, frontend options, report paths,
-module exports and caller-owned output streams. It is available in the Python
-package and in C++ through `somtparser/translation/translate.h`, linked with
-`SOMTParser::languages`. There is no `somt-convert` executable or pip command.
-See [translation and experiment migration](docs/translate.md) for examples and
-the status-code contract. The same `Translation` provides `smt2`, formatted `diagnostics`, `exit_code`,
-`ok`, `parser`, structured `diagnostic_items`, `report`, and dialect export
-methods. `details=False` skips optional audit records and DAG statistics and
-releases inspection structures after output; `report` is then `None` and
-unavailable inspection/export operations raise clear errors.
 
 Prebuilt wheels are published on [PyPI](https://pypi.org/project/somtparser/) for
 CPython 3.9–3.13 on Linux x86_64 (manylinux), macOS (Intel needs macOS 15+,

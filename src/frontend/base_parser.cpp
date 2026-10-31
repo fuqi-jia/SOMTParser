@@ -27,9 +27,6 @@
 
 #include "somtparser/frontend/parser.h"
 #include "somtparser/core/timing.h"
-#include "somtparser/translation/translate.h"
-#include "somtparser/lowering/optimathsat_array_lowering.h"
-#include "somtparser/lowering/z3_finite_set_lowering.h"
 #include <fstream>
 #include <queue>
 #include <stack>
@@ -3957,26 +3954,12 @@ private:
 	}
 
 	std::string Parser::dumpSMT2(){
-		return dumpSMT2(Lower::OmtDialect::Z3);
-	}
-
-	std::string Parser::dumpSMT2(Lower::OmtDialect dialect){
 		std::ostringstream out;
-		writeSMT2(out, dialect);
+		writeSMT2(out);
 		return out.str();
 	}
 
 	void Parser::writeSMT2(std::ostream& out){
-		writeSMT2(out, Lower::OmtDialect::Z3);
-	}
-
-	void Parser::writeSMT2(std::ostream& destination, Lower::OmtDialect dialect){
-		const bool lower_sets = dialect == Lower::OmtDialect::OptiMathSAT
-		    && Lower::needsOptiMathSatSetLowering(*this);
-		const bool lower_arrays = dialect == Lower::OmtDialect::OptiMathSAT
-		    && (lower_sets || (Lower::needsOptiMathSatArrayLowering(*this) || Lower::needsOptiMathSatDefinitionLowering(*this)));
-		std::ostringstream array_output;
-		std::ostream& out = lower_arrays ? static_cast<std::ostream&>(array_output) : destination;
 		// Dump the current state, followed by the last query and its response
 		// requests. Replaying earlier checks against this state would be wrong.
 		const auto& commands = script_.commands();
@@ -4016,32 +3999,19 @@ private:
 		};
 		if (query) validateQueryTerms(query->assumptions);
 		for (size_t i = tail; i < commands.size(); ++i) validateQueryTerms(commands[i].value_terms);
-		const auto omt = renderSMT2Objectives(dialect);
-		out << omt.preamble;
-		writeSMT2State(out, {}, true, dialect);
-		out << omt.commands;
+		// Validate optimization state before writing any output.
+		const auto objectives = renderSMT2Objectives();
+		writeSMT2State(out, {}, true, false);
+		out << objectives;
 		if (query && query->isCheckSatAssuming()) {
-			if (dialect == Lower::OmtDialect::SmtLib2025 && !omt.objective_names.empty()) {
-				const auto close = omt.query.rfind(')');
-				condAssert(close != std::string::npos, "writeSMT2: invalid optimization query");
-				out << omt.query.substr(0, close);
-				for (const auto& term : query->assumptions) {
-					out << " :assumption ";
-					dumpSMTLIB2Shared(term, out);
-				}
-				out << ")\n";
-			} else {
-				out << "(check-sat-assuming (";
-				bool first = true;
-				for (const auto& term : query->assumptions) {
-					if (!first) out << ' ';
-					first = false;
-					dumpSMTLIB2Shared(term, out);
-				}
-				out << "))\n";
+			out << "(check-sat-assuming (";
+			for (size_t i = 0; i < query->assumptions.size(); ++i) {
+				if (i) out << ' ';
+				dumpSMTLIB2Shared(query->assumptions[i], out);
 			}
+			out << "))\n";
 		} else {
-			out << omt.query;
+			out << "(check-sat)\n";
 		}
 		for (size_t i = tail; i < commands.size(); ++i) {
 			const auto& command = commands[i];
@@ -4054,23 +4024,11 @@ private:
 						dumpSMTLIB2Shared(command.value_terms[j], out);
 					}
 					out << "))\n";
-				} else if (dialect == Lower::OmtDialect::SmtLib2025
-				    && command.type == CMD_TYPE::CT_GET_OBJECTIVES) {
-					if (!omt.objective_names.empty()) {
-						out << "(get-value (";
-						for (size_t j = 0; j < omt.objective_names.size(); ++j) {
-							if (j) out << ' ';
-							out << omt.objective_names[j];
-						}
-						out << "))\n";
-					}
 				} else out << command.original << '\n';
 			}
 		}
 		out << "(exit)\n";
-		if (lower_arrays) destination << Lower::lowerBooleanArraysForOptiMathSat(lower_sets
-		    ? Lower::lowerFiniteSetsForOptiMathSat(array_output.str()) : array_output.str());
-		if(!out || !destination){
+		if(!out){
 			throw std::runtime_error("writeSMT2: failed while writing SMT-LIB output");
 		}
 	}
@@ -4083,25 +4041,16 @@ private:
 
 	void Parser::writeSMT2Module(std::ostream& out,
 	                             const std::unordered_set<std::string>& bound_parameters){
-		writeSMT2State(out, bound_parameters, false, Lower::OmtDialect::Z3);
-	}
-
-	void Parser::writeSMT2HardModule(std::ostream& out){
-		writeSMT2State(out, {}, true, Lower::OmtDialect::None);
+		writeSMT2State(out, bound_parameters, false, true);
 	}
 
 	void Parser::writeSMT2State(std::ostream& out,
 	                           const std::unordered_set<std::string>& bound_parameters,
-	                           bool include_objectives, Lower::OmtDialect dialect){
-		// An input without (set-logic ...) leaves the logic at the placeholder
-		// UNKNOWN_LOGIC, which is not a logic name any parser accepts -- ours
-		// included -- so emitting it made every such dump unreadable. That is the
-		// exact round trip Parser::parseAny relies on to move a translated model
-		// into an existing parser. Fall back to ALL, which is what "no logic was
-		// stated" means for a dump; an explicitly stated logic passes through.
+	                           bool include_options, bool include_soft){
+		// Use ALL when the input did not specify a logic.
 		const std::string logic = getOptions()->getLogic();
 		out << "(set-logic " << (logic == "UNKNOWN_LOGIC" ? "ALL" : logic) << ")" << '\n';
-		if (include_objectives && dialect != Lower::OmtDialect::None) {
+		if (include_options) {
 			// Internal parser settings are not SMT-LIB solver options.
 			static const std::unordered_set<std::string> internal = {
 				"keep_let", "precision", "float_evaluate", "expand_functions",
@@ -4110,9 +4059,6 @@ private:
 			for (const auto& option : getOptions()->options) {
 				if (internal.count(option.first) || option.first == "opt.priority"
                     || option.first == "enable-omt") continue;
-                if (dialect == Lower::OmtDialect::OptiMathSAT && option.first == "produce-models"
-                    && option.second == "true"
-                    && (!getObjectives().empty() || !context_.soft_assertions.empty())) continue;
                 options.push_back(option);
 			}
 			std::sort(options.begin(), options.end());
@@ -4405,7 +4351,7 @@ private:
 		// script well-formed, and the answer to a different question. The same
 		// failure family as the floating-point and string constants that could
 		// be built and not read back, and the most consequential of them.
-		for(size_t i = 0; !include_objectives && i < context_.soft_assertions.size(); i++){
+		for(size_t i = 0; include_soft && i < context_.soft_assertions.size(); i++){
 			out << "(assert-soft ";
 			dumpSMTLIB2Shared(context_.soft_assertions[i], out);
 			if(i < context_.soft_weights.size() && context_.soft_weights[i]){
@@ -4427,24 +4373,13 @@ private:
 	}
 
 	std::string Parser::dumpSMT2(const std::string& filename){
-		return dumpSMT2(filename, Lower::OmtDialect::Z3);
-	}
-
-	std::string Parser::dumpSMT2(const std::string& filename, Lower::OmtDialect dialect){
-		// Validate before truncating an existing destination.
-		(void)renderSMT2Objectives(dialect);
-		const bool lower_arrays = dialect == Lower::OmtDialect::OptiMathSAT
-		    && (Lower::needsOptiMathSatSetLowering(*this) || (Lower::needsOptiMathSatArrayLowering(*this) || Lower::needsOptiMathSatDefinitionLowering(*this)));
-		// Dialect lowering can reject an unsupported array construct. Complete
-		// that work before opening the user's destination with truncation.
-		std::string rendered;
-		if (lower_arrays) rendered = dumpSMT2(dialect);
+		// Validate optimization state before truncating an existing destination.
+		(void)renderSMT2Objectives();
 		std::ofstream file(filename, std::ios::binary | std::ios::out | std::ios::trunc);
 		if(!file){
 			throw std::runtime_error("dumpSMT2: could not open destination: " + filename);
 		}
-		if (lower_arrays) file << rendered;
-		else writeSMT2(file, dialect);
+		writeSMT2(file);
 		file.flush();
 		if(!file){
 			throw std::runtime_error("dumpSMT2: failed while writing destination: " + filename);
@@ -4590,118 +4525,6 @@ private:
 		}
 
 		return NodeManager::NULL_NODE;
-	}
-
-	bool Parser::parseAny(const std::string& path) {
-		Lang::SourceUnit unit;
-		unit.main_path = path;
-		unit.display_name = path;
-		return parseAny(unit);
-	}
-
-	bool Parser::parseAny(const Lang::SourceUnit& unit) {
-		TranslateOptions opts;
-		Translation t = translate(unit, opts);
-		auto report = std::make_shared<Uir::TranslationReport>(t.report());
-		last_report_ = report;
-		if (!t.ok()) {
-			// This is the reachable failure path: every source-language lex,
-			// parse or type error, every unsupported construct and every
-			// rejected profile arrives here. translate() recorded why in its
-			// own Diagnostics, which dies with the Translation -- report()
-			// carries none of it. Copying it across is the only thing that
-			// keeps the failure visible to a caller that inspects
-			// lastTranslationReport() rather than the return value; without it
-			// that caller reads an exact-fidelity report with no entries at
-			// all, which is indistinguishable from a translation that
-			// succeeded.
-			for (const auto& d : t.diagnostics().all()) {
-				report->addWarning(d);
-			}
-			if (!t.diagnostics().hasErrors()) {
-				// Every !ok() return inside translate() records an error first,
-				// so this is a guard against a future path that forgets to.
-				// Copying zero ERROR entries would put the report straight back
-				// to reading as a success.
-				Uir::Diagnostic d;
-				d.severity = Uir::Severity::ERROR;
-				d.code = Uir::ErrorCode::E_INTERNAL;
-				d.message = "parseAny: translating '" + unit.main_path
-					+ "' failed without recording a cause";
-				report->addWarning(d);
-			}
-			return false;
-		}
-		// Move the translated content into this Parser by replaying it as
-		// SMT-LIB text. HirToParser never lowers objectives onto a Parser
-		// object directly -- they exist only as the text toSmt2() renders --
-		// so plain dumpSMT2() (declarations + assertions only) would silently
-		// drop any minimize/maximize goal. toSmt2() carries them, but the
-		// dialect must be one *this* parser can read back: it is an internal
-		// detail of moving content between two in-process Parsers, not the
-		// caller's TranslateOptions::omt_dialect, which governs what toSmt2()
-		// hands to an *external* solver. toSmt2()'s default (the SMT 2025
-		// proposal syntax, define-objective/optimize-sat) is not implemented
-		// by this parser's command dispatch (base_parser.cpp recognises
-		// "define-objective" but with this project's own, different grammar,
-		// and does not recognise "optimize-sat" at all). Lower::OmtDialect::Z3
-		// emits (minimize t)/(maximize t), which is exactly the grammar this
-		// parser's own "minimize"/"maximize" commands accept
-		// (src/frontend/opt_parser.cpp, parseSingleObj), so it is the one
-		// objective grammar that actually round-trips here. Keep the native
-		// theory terms: external Z3 export may lower Set to arrays or refuse
-		// an unsupported carrier, neither of which belongs in this transfer.
-		//
-		// Count what is already here first. A Parser is not required to be
-		// empty when parseAny() is called -- the header documents parsing an
-		// objective by hand and then calling parseAny(), and a batch driver may
-		// reuse one Parser across inputs -- so the check below has to be about
-		// what *this* call added, not about the total.
-		const size_t objectives_before = getObjectives().size();
-		if (!parseStr(t.toParserSmt2())) {
-			// Returning false with nothing recorded would leave
-			// lastTranslationReport() reading as a successful, exact-fidelity
-			// translation -- translate() genuinely succeeded, the round trip
-			// into *this* parser is what failed -- so a caller that inspects
-			// the report instead of the return value would see no failure at
-			// all. Record it where that caller looks.
-			Uir::Diagnostic d;
-			d.severity = Uir::Severity::ERROR;
-			d.code = Uir::ErrorCode::E_INTERNAL;
-			d.message = "parseAny: the translated model did not parse back into "
-				"the destination parser (details on stderr)";
-			report->addWarning(d);
-			return false;
-		}
-		// A round trip that silently drops objectives is worse than a failure:
-		// the caller would get back a Parser that looks fine and solves the
-		// wrong (unconstrained) problem. Verify what this call added against
-		// the HIR model's count -- not parser()->getObjectives(), which is
-		// unconditionally empty per the note above -- and fail loudly on a
-		// mismatch instead of returning true.
-		//
-		// Compared as totals rather than as a subtraction: size() is unsigned,
-		// and a hypothetical decrease would underflow into a huge "added" count
-		// that reads as a wildly different defect than the one that occurred.
-		const size_t objectives_now = getObjectives().size();
-		if (objectives_now != objectives_before + t.objectiveCount()) {
-			Uir::Diagnostic d;
-			d.severity = Uir::Severity::ERROR;
-			d.code = Uir::ErrorCode::E_INTERNAL;
-			d.message = "parseAny: " + std::to_string(t.objectiveCount())
-				+ " objective(s) in the translated model, so this parser should"
-				  " hold " + std::to_string(objectives_before + t.objectiveCount())
-				+ " after adding them to the " + std::to_string(objectives_before)
-				+ " it already had, but it holds " + std::to_string(objectives_now);
-			report->addWarning(d);
-			return false;
-		}
-		return true;
-	}
-
-	const Uir::TranslationReport& Parser::lastTranslationReport() const {
-		static const Uir::TranslationReport kEmpty;
-		return last_report_ ? *last_report_ : kEmpty;
 	}
 
 }

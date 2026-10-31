@@ -1,8 +1,0 @@
-<instance format="XCSP3" type="CSP">
-  <variables>
-    <var id="z"> 0..3 7 9..12 </var>
-  </variables>
-  <constraints>
-    <intension> ge(z, 0) </intension>
-  </constraints>
-</instance>

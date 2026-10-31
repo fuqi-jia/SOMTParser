@@ -1,2 +1,0 @@
-var int: x;
-constraint int_le(x, 3);

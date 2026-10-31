@@ -1,6 +1,0 @@
-#QCIR-G14
-# qcir.md §4.4. Gate and input variables are disjoint namespaces: a gate
-# variable may not occur in `free` or in a quantifier block.
-exists(g1)
-output(g1)
-g1 = and(a)

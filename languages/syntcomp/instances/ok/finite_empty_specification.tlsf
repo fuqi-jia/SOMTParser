@@ -1,2 +1,0 @@
-INFO { TITLE: "empty finite specification" SEMANTICS: Finite,Moore TARGET: Moore }
-MAIN { INPUTS { } OUTPUTS { } }

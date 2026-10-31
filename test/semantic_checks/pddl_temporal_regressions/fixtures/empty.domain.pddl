@@ -1,5 +1,0 @@
-(define (domain empty-duration)
- (:requirements :strips :durative-actions :fluents)
- (:predicates (done))
- (:durative-action finish :parameters () :duration ()
-  :condition () :effect (at end (done))))

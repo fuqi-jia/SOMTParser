@@ -1,8 +1,0 @@
-c qdimacs.md §2.3, second row. x1 and x3 are quantified and occur in no clause.
-c They still BIND, and they still fix the alternation depth a QBF solver's
-c difficulty is measured by -- so dropping them would report a shallower
-c instance than the file describes.
-p cnf 3 1
-a 1 0
-e 2 3 0
-2 0

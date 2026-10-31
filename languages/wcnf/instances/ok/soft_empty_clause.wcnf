@@ -1,4 +1,0 @@
-c A SOFT empty clause is a constant cost, which is legal and is not the same as
-c a hard one. A hard empty clause makes the instance unsatisfiable.
-5 0
-h 1 0

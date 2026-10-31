@@ -1,5 +1,0 @@
-(define (domain zero-conflict)
- (:requirements :strips :durative-actions :fluents)
- (:predicates (done) (p))
- (:durative-action finish :parameters () :duration (= ?duration 0)
-  :condition () :effect (and (at start (p)) (at end (not (p))) (at end (done)))))

@@ -1,8 +1,0 @@
-array [1..4] of int: allowed = [0,1,2,3];
-var int: x;
-var int: y;
-var bool: b;
-constraint gecode_table_int([x,y],allowed);
-constraint gecode_table_int_reif([y,x],allowed,b);
-constraint bool_eq(b,false);
-solve maximize x;

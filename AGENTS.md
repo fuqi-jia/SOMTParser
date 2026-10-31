@@ -8,23 +8,12 @@ bindings. Read `README.md` and `docs/source-layout.md` for the current design.
 - `include/somtparser/` and `src/`: public headers and C++ implementations.
 - `core/`, `ir/`, `context/`, `passes/`, `frontend/`, `model/`: the SMT parser,
   typed DAG, transformations and model evaluation.
-- `hir/`: shared typed constraint representation and construction APIs.
-- `translation/`: language registry, profiles, diagnostics and pass pipeline.
-- `lowering/`: HIR encoding into the SMT DAG and target dialects.
-- `languages/`: optional language frontends and their input fixtures.
-- `python/`: pybind11 bindings, Python package and public `.pyi` stubs.
-- `tools/`: optional PDDL and semantic validation helpers.
-- `test/`: C++ tests, Python tests and semantic checks.
+- `python/`: native pybind11 bindings, Python package and public `.pyi` stubs.
+- `test/`: native C++ tests, Python binding tests and SMT fixtures.
 
-The translation path is language frontend -> HIR -> shared encoding -> SMT DAG
--> SMT-LIB/OMT. Some compact paths stream output; native SMT-LIB parsing can
-construct the SMT DAG directly. Use `hir/` and `translation/` header paths;
-historical C++ namespace names containing `Uir` remain public API.
-
-File conversion is the public `translate` API in `translation/translate.h`, linked
-with `SOMTParser::languages`, and `somtparser.translate` in Python. There is no
-standalone converter executable or console script. Keep conversion/report
-policy in that library implementation and Python bindings limited to adapters.
+The native path is SMT-LIB/OMT input -> typed SMT DAG -> analysis,
+transformation or SMT-LIB/OMT output. Future language frontends, HIR,
+translation and lowering are present only on `develop`.
 
 ## Branch policy
 
@@ -36,7 +25,8 @@ policy in that library implementation and Python bindings limited to adapters.
   extensions. Base this work on `origin/develop` and target `develop`.
 - Port shared SMT fixes from `main` to `develop` when needed. Keep promotion
   of future features from `develop` into `main` as a separate, scoped
-  integration.
+  integration. Keep language frontends, HIR and translation entry points off
+  `main`; do not merge `develop` wholesale into `main` for routine SMT fixes.
 
 ## Build and validation
 
@@ -47,7 +37,7 @@ pre-commit gate. Do not additionally build/install Python packages, run
 Python-version matrices, or dispatch/wait for wheel builds unless the user
 explicitly requests them for the current task. When full C++ validation is
 needed, use the `CI Tests` configuration in `.github/workflows/ci.yml`:
-Debug, all C++ tests and tools enabled, warnings as errors, two workers.
+Debug, all native C++ tests enabled, warnings as errors, two workers.
 Choose the checkout and PR base using the branch policy above; do not
 force-push over unrelated remote changes. Report checks actually run and
 distinguish focused checks from full CI validation. Fix known failures before
@@ -71,16 +61,15 @@ ctest --test-dir "${SOMTPARSER_BUILD_DIR:-build}" -R 'SOMTParser.test_name$' --o
 
 ```
 
-`run_all_tests.sh` enables tests, tools and warnings as errors; its build type
+`run_all_tests.sh` enables tests and warnings as errors; its build type
 defaults to Debug and can be overridden with `CMAKE_BUILD_TYPE`. Python builds
-need `BUILD_PYTHON=ON` and `SOMTPARSER_BUILD_LANGUAGES=ON`. Ensure imports resolve
+need `BUILD_PYTHON=ON`. Ensure imports resolve
 to an extension built from the current source before trusting Python results.
 
 C++ tests are discovered from `test/**/*.cpp` and registered as
 `SOMTParser.<file_basename>`. Run standalone test binaries from the repository
 root because fixtures use relative paths. Focused checks are useful during
-development and may be sufficient for a scoped change. Language documentation
-citations can be checked with `python scripts/check-doc-citations.py`.
+development and may be sufficient for a scoped change.
 
 ## Implementation invariants
 
@@ -99,7 +88,7 @@ citations can be checked with `python scripts/check-doc-citations.py`.
 - Preserve symbol-resolution order and deterministic declaration output.
 - When changing public APIs, update the appropriate public headers, bindings,
   `.pyi` stubs and documentation together. Core APIs use the umbrella header
-  `include/somtparser/parser.h`; HIR/translation also have dedicated headers.
+  `include/somtparser/parser.h`.
 - `test/instances/error_*.smt2` are historical regression fixtures expected to
   parse successfully, despite their filenames.
 

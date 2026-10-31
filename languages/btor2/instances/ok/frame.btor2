@@ -1,7 +1,0 @@
-; A state with NO `next` line is treated as a primary input by BTOR2. It starts
-; at 0 because of init, then may take a fresh value and reach the bad state.
-1 sort bitvec 1
-2 constd 1 0
-3 state 1 held
-4 init 1 3 2
-5 bad 3

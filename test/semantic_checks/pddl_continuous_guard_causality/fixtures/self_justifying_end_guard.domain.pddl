@@ -1,1 +1,0 @@
-(define (domain guards) (:requirements :adl :fluents :durative-actions :continuous-effects) (:types item) (:constants a b - item) (:predicates (p) (done)) (:functions (x)) (:durative-action flow :parameters () :duration (= ?duration 1) :condition () :effect (when (at end (> (x) 0)) (increase (x) #t))))

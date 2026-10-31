@@ -1,9 +1,0 @@
-; `i` has no :next annotation, so it is an INPUT: fresh at every step, not a
-; state that persists.
-(declare-fun s () Bool)
-(declare-fun s.next () Bool)
-(declare-fun i () Bool)
-(define-fun sv0 () Bool (! s :next s.next))
-(define-fun init () Bool (! (not s) :init true))
-(define-fun trans () Bool (! (= s.next i) :trans true))
-(define-fun prop () Bool (! (not s) :invar-property 0))

@@ -1,8 +1,0 @@
-c Two adjacent existential blocks: ONE alternation with the forall, not two.
-c qdimacs.md §2.2 -- adjacent blocks of the same quantifier may be merged or
-c reordered freely, which is what the polynomial hierarchy's levels count.
-p cnf 3 1
-a 1 0
-e 2 0
-e 3 0
-1 2 3 0

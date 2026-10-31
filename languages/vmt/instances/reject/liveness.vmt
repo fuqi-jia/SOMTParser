@@ -1,6 +1,0 @@
-(declare-fun s () Bool)
-(declare-fun s.next () Bool)
-(define-fun sv0 () Bool (! s :next s.next))
-(define-fun init () Bool (! (not s) :init true))
-(define-fun trans () Bool (! (= s.next s) :trans true))
-(define-fun p () Bool (! s :live-property 0))

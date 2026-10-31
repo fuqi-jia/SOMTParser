@@ -1,8 +1,0 @@
-<instance format="XCSP3" type="CSP">
-  <variables>
-    <array id="q" size="[3]"> 0..2 </array>
-  </variables>
-  <constraints>
-    <allDifferent> q[] </allDifferent>
-  </constraints>
-</instance>

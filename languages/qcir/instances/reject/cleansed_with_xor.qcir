@@ -1,6 +1,0 @@
-#QCIR-G14 3
-# qcir.md §4.5. The count on the format identifier declares this file cleansed,
-# and a cleansed formula contains no xor and no ite gates at all. Believing the
-# header over the body would let a mislabelled file through.
-output(g1)
-g1 = xor(1, 2)

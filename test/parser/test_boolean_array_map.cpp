@@ -1,7 +1,4 @@
 #include "somtparser/frontend/parser.h"
-#include "somtparser/hir/typecheck.h"
-#include "somtparser/lowering/parser_to_hir.h"
-#include "somtparser/lowering/hir_to_parser.h"
 #include "test_helpers.h"
 #include <string>
 
@@ -9,7 +6,7 @@ using namespace SOMTParser;
 
 int main() {
     // Finite-set output is represented by total Boolean arrays. Keep map as
-    // a typed DAG operation through both parser and HIR round trips.
+    // a typed DAG operation through native parser round trips.
     const std::string source =
         "(set-logic ALL)"
         "(declare-const A (Array Int Bool))"
@@ -26,17 +23,6 @@ int main() {
     auto reader = newParser();
     VERIFY(reader->parseStr(dumped));
     VERIFY(reader->dumpSMT2() == dumped);
-    Uir::Diagnostics diagnostics;
-    Uir::Hir::ConstraintModel model;
-    Lower::ParserToHir up(reader);
-    VERIFY(up.lift(model, diagnostics));
-    VERIFY(Uir::Hir::typeCheck(model, diagnostics));
-    auto lowered = newParser();
-    Lower::HirToParser down(lowered);
-    Uir::TranslationReport report;
-    VERIFY(down.lower(model, report, diagnostics));
-    VERIFY(lowered->dumpSMT2() == dumped);
-
     for (const auto* invalid : {
             "((_ map not) A B)", "((_ map and) A)",
             "((_ map or) A 1)", "((_ map and) A I)",

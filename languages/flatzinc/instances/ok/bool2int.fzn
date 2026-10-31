@@ -1,7 +1,0 @@
-% §2.3: `i` is constrained to {0,1} as well as to equal the coercion. The ITE
-% already forces the value; the bounds put the domain on the VARIABLE, so it
-% survives independently of this one constraint.
-var bool: b;
-var int: i;
-constraint bool2int(b, i);
-solve satisfy;

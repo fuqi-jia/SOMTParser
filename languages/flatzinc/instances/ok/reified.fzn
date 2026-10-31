@@ -1,7 +1,0 @@
-% §4.6. `<base>_reif(args, b)` is `b <-> base(args)`, handled generically
-% because the builtin catalogue is OPEN and one case per reified name would
-% fall behind it.
-var 1..4: x;
-var bool: b;
-constraint int_eq_reif(x, 3, b);
-solve satisfy;

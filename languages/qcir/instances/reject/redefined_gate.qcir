@@ -1,5 +1,0 @@
-#QCIR-G14
-# qcir.md §4.4. A gate variable occurs exactly once on the left of `=`.
-output(g1)
-g1 = and(a)
-g1 = or(b)

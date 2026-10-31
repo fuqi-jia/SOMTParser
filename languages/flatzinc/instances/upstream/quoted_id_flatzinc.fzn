@@ -1,3 +1,0 @@
-var bool: x:: output_var;
-var bool: X_INTRODUCED_0_:: output_var;
-solve  satisfy;

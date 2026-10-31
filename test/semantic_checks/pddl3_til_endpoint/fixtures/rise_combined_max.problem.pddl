@@ -1,5 +1,0 @@
-(define (problem rise_combined_max) (:domain til-endpoint)
-  (:init (g) (at 10 (p)))
-  (:goal (g))
-  (:constraints (and (preference late (sometime (p))) (preference late (at end (p))) (preference late (hold-after 5 (p)))))
-  (:metric maximize (- 31 (+ total-time (* 7 (is-violated late))))))

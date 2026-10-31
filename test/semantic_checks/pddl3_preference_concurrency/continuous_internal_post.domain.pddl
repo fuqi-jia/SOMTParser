@@ -1,5 +1,0 @@
-(define (domain d) (:requirements :adl :fluents :durative-actions :continuous-effects :preferences :derived-predicates)
-    (:predicates (done-a) (done-b) (d)) (:functions (x)) (:derived (d) (< (x) 0))
-    (:durative-action a :parameters () :duration (= ?duration 2)
-     :condition (preference pref (over all (d))) :effect (and (decrease (x) #t) (at end (done-a))))
-    (:action b :parameters () :effect (and (assign (x) 0) (done-b))))

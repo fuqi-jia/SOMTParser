@@ -46,9 +46,7 @@
 namespace SOMTParser{
     #undef assert
 
-    namespace Lang { struct SourceUnit; }
     namespace Uir  { class TranslationReport; }
-    namespace Lower { enum class OmtDialect; struct RenderedOmt; }
 
     enum class SCAN_MODE {
         SM_COMMON,
@@ -279,17 +277,14 @@ namespace SOMTParser{
         bool                                          has_parse_error_ = false;
         size_t                                        next_command_index_ = 0;
 
-        /** Report from the last parseAny() call. */
-        std::shared_ptr<Uir::TranslationReport>       last_report_;
-
         void indexSourceLines();
         SourcePosition sourcePosition(size_t offset) const;
         Command makeCommand(CMD_TYPE type, size_t begin_offset,
                             size_t end_offset, size_t begin_line);
         void writeSMT2State(std::ostream& out,
                            const std::unordered_set<std::string>& bound_parameters,
-                           bool include_objectives, Lower::OmtDialect dialect);
-        Lower::RenderedOmt renderSMT2Objectives(Lower::OmtDialect dialect);
+                           bool include_options, bool include_soft);
+        std::string renderSMT2Objectives();
 
     public:
         
@@ -352,22 +347,6 @@ namespace SOMTParser{
         const ParseErrorException* lastParseError() const noexcept {
             return has_parse_error_ ? &last_parse_error_ : nullptr;
         }
-
-        /**
-         * Detect the input language via the registry and translate into this
-         * Parser. A .smt2 file not claimed by CHC sniffing takes the existing
-         * SMT-LIB fast path at no extra cost. With no language library linked
-         * the registry is empty and only SMT-LIB is recognised.
-         *
-         * Declared here but implemented in src/frontend/base_parser.cpp against
-         * a forward declaration, so core keeps no compile-time dependency on
-         * any concrete language.
-         */
-        bool parseAny(const std::string& path);
-        bool parseAny(const Lang::SourceUnit& unit);
-
-        /** Report from the last parseAny; language_id is empty if never called. */
-        const Uir::TranslationReport& lastTranslationReport() const;
 
         /** Load SMT-LIB text for command-at-a-time parsing with nextCommand(). */
         bool loadStr(const std::string& constraint,
@@ -1004,8 +983,7 @@ namespace SOMTParser{
         // ---- Finite sets -------------------------------------------------
         // The theory had a SORT_KIND and nothing else: no NODE_KINDs, no
         // operators, no builders, so (Set Int) was a sort a model could declare
-        // and nothing could constrain. docs/languages/smtlib2.md recorded that
-        // as the last open row of its gap table.
+        // and nothing could constrain.
         /** `(as set.empty (Set T))`. @p set_sort must be a set sort. */
         std::shared_ptr<DAGNode> mkSetEmpty(std::shared_ptr<Sort> set_sort);
         /** `(as set.universe (Set T))`. */
@@ -3571,10 +3549,7 @@ namespace SOMTParser{
          * output, different formula, no error anywhere.
          *
          * The parse path builds it correctly by inserting the body at the front
-         * (src/frontend/base_parser.cpp:2704) and so does the HIR lowering
-         * (src/lowering/hir_to_parser.cpp:270), which hit this and worked around
-         * it at the call site; the declaration is fixed here so the next caller
-         * does not have to rediscover it.
+         * by placing the body before the bound variables.
          *
          * @param params { body, var1, var2, ... }
          * @return Forall node
@@ -3595,10 +3570,7 @@ namespace SOMTParser{
          * output, different formula, no error anywhere.
          *
          * The parse path builds it correctly by inserting the body at the front
-         * (src/frontend/base_parser.cpp:2704) and so does the HIR lowering
-         * (src/lowering/hir_to_parser.cpp:270), which hit this and worked around
-         * it at the call site; the declaration is fixed here so the next caller
-         * does not have to rediscover it.
+         * by placing the body before the bound variables.
          *
          * @param params { body, var1, var2, ... }
          * @return Exists node
@@ -4247,11 +4219,9 @@ namespace SOMTParser{
          * @return String representation of the SMT2
          */
         std::string                             dumpSMT2();
-        std::string dumpSMT2(Lower::OmtDialect dialect);
 
         /** Emit the complete script directly to a stream. */
         void writeSMT2(std::ostream& out);
-        void writeSMT2(std::ostream& out, Lower::OmtDialect dialect);
 
         /** Declarations and assertions without a query or exit. Module writers
          * may omit constants that they bind as function parameters instead. */
@@ -4260,9 +4230,6 @@ namespace SOMTParser{
         /** Emit declarations/assertions directly, without check-sat or exit. */
         void writeSMT2Module(std::ostream& out,
                              const std::unordered_set<std::string>& bound_parameters = {});
-        /** Declarations and hard assertions only, for a dialect writer that
-         * owns soft-constraint and objective emission. */
-        void writeSMT2HardModule(std::ostream& out);
 
         /**
          * @brief Dump the SMT2 representation of the parsed expressions to a file
@@ -4271,7 +4238,6 @@ namespace SOMTParser{
          * @return Filename
          */
         std::string                             dumpSMT2(const std::string& filename);
-        std::string dumpSMT2(const std::string& filename, Lower::OmtDialect dialect);
 
         /**
          * @brief Remove functions by name

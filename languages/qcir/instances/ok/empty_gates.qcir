@@ -1,8 +1,0 @@
-#QCIR-G14
-# qcir.md §4.2. `and()` is true and `or()` is false -- lit-list derives epsilon,
-# so both are legal, and mkOp throws on an empty argument list rather than
-# inventing an identity.
-output(g3)
-g1 = and()
-g2 = or()
-g3 = or(g1, g2)

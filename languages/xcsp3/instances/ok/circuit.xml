@@ -1,8 +1,0 @@
-<instance format="XCSP3" type="CSP">
-  <variables>
-    <array id="s" size="[4]"> 0..3 </array>
-  </variables>
-  <constraints>
-    <circuit> <list> s[] </list> </circuit>
-  </constraints>
-</instance>

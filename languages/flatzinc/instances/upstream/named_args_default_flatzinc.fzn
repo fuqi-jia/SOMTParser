@@ -1,4 +1,0 @@
-predicate foo(var int: x,var int: y = 5);
-var 0..10: a:: output_var;
-constraint foo(a,5);
-solve  satisfy;

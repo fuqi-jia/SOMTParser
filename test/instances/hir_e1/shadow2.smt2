@@ -1,6 +1,0 @@
-(set-logic UFLIA)
-(declare-fun p (Int) Bool)
-(define-fun q ((i Int)) Bool (forall ((j Int)) (=> (< i j) (p j))))
-(declare-const j Int)
-(assert (q j))
-(check-sat)

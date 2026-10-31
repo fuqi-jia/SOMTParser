@@ -1,36 +1,25 @@
-# HIR and translation modules
+# Native SMT source layout
 
-HIR is the shared constraint representation. `translation/` contains the
-pipeline that operates on it; it is not another intermediate representation.
+`main` provides the C++17 SMT-LIB/OMT frontend and its Python bindings.
 
 | Directory under `include/somtparser/` and `src/` | Responsibility |
 | --- | --- |
-| `hir/` | Typed expressions, declarations, constraints, objectives, feature vocabulary, type checking, compact storage and planning construction APIs |
-| `translation/` | Language interface and registry, encoding profiles, pass orchestration, diagnostics, semantic contracts, reports and translation/module entry points |
-| `lowering/` | Encode HIR into the existing SMT representation and emit target dialects |
-| `ir/` | The original SMT expression DAG, sorts and values |
+| `core/` | Kinds, utilities, assertions and timing |
+| `ir/` | SMT expression DAG, sorts, values and exact numbers |
+| `context/` | Hash-consed node construction and expression managers |
+| `frontend/` | SMT-LIB/OMT parsing, symbols, commands, objectives and streaming output |
+| `passes/` | Traversal, rewriting and formula transformations |
+| `model/` | Solver model parsing and evaluation |
 
-The main language translation path is:
+The native path is SMT-LIB/OMT input -> typed SMT DAG -> analysis,
+transformation or SMT-LIB/OMT output. Include `somtparser/parser.h` for the
+public parser API. Link `SOMTParser::somtparser` for the frontend or
+`SOMTParser::somtparser_ir` for the independently usable IR/numeric library.
 
-```text
-language frontend -> HIR -> shared encoding -> SMT DAG -> SMT-LIB / OMT
-```
+`python/bindings.cpp` exposes the native API. The package initializer and
+public type stubs live in `python/somtparser/`. Native C++ tests are in
+`test/`, with Python binding tests under `test/python/`.
 
-Compact clause and linear-row paths may stream output without materializing the
-entire SMT DAG. The native SMT-LIB parser can construct the SMT DAG directly.
-Neither path introduces a separate UIR representation.
-
-Use the headers matching the API you need:
-
-```cpp
-#include <somtparser/hir/hir.h>
-#include <somtparser/hir/typecheck.h>
-#include <somtparser/translation/translate.h>
-```
-
-The C++ namespaces (`SOMTParser::Uir::Hir`, `SOMTParser::Uir`
-and `SOMTParser::Lang`) and public Python APIs are unchanged. Header paths use
-`hir/` and `translation/` exclusively; update existing includes to these paths.
-There are no forwarding headers or implementation under `uir/`.
-Module tests live in `test/hir/` and `test/translation/`; existing test executable
-names are retained so CI filters and historical records still identify them.
+Future language frontends, HIR, translation, lowering and natural-language
+modeling are maintained on [develop](https://github.com/fuqi-jia/SOMTParser/tree/develop).
+They are excluded from main's source, build and Python API.

@@ -1,5 +1,0 @@
-(define (problem rise_hold_after_hard) (:domain til-endpoint)
-  (:init (g) (at 10 (p)))
-  (:goal (g))
-  (:constraints (hold-after 5 (p)))
-  (:metric minimize total-time))

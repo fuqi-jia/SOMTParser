@@ -30,11 +30,8 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/fuqi-jia/SOMTParser"
 
-[project.scripts]
-somt-nl = "somtparser.natural_language:main"
-
 [project.optional-dependencies]
-test = ["pytest>=7.0", "jsonschema>=4.18"]
+test = ["pytest>=7.0"]
 benchmark = ["z3-solver==5.1.0.0"]
 
 [tool.scikit-build]
@@ -46,7 +43,7 @@ cmake.args = [
 ]
 wheel.packages = ["python/somtparser"]
 wheel.install-dir = "somtparser"
-# The extension statically links the core and language frontends. C++ archives,
+# The extension statically links the SMT core. C++ archives,
 # headers, and CMake package files belong to a normal CMake installation.
 install.components = ["Python"]
 

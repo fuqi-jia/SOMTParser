@@ -1,6 +1,0 @@
-(declare-fun x () Int)
-(declare-fun x.next () Int)
-(define-fun sv0 () Int (! x :next x.next))
-(define-fun init () Bool (! (= x 0) :init true))
-(define-fun trans () Bool (! (= x.next (+ x 1)) :trans true))
-(define-fun prop () Bool (! (< x 10) :invar-property 0))

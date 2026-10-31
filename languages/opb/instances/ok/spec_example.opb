@@ -1,8 +1,0 @@
-* The format document's own example. The coefficient is 1.23e19, larger than
-* LLONG_MAX (9.22e18), which is why opb-wbo.md §2.3 calls the unbounded-integer
-* decision the format's defining one -- and why Hir::Expr::int_value could not
-* be the authoritative value.
-* #variable= 4 #constraint= 2 intsize= 64
-min: 1 x1 +2 x2 -3 x3 ;
-1 x1 +1 x2 >= 1 ;
-12345678901234567890 x4 +4 x3 >= 10 ;

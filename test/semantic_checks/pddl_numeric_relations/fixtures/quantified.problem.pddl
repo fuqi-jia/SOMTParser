@@ -1,1 +1,0 @@
-(define (problem p) (:domain numeric) (:init (= (fuel a) 2) (= (fuel b) -1)) (:goal (done)) )

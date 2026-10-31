@@ -1,9 +1,0 @@
-#QCIR-G14
-# The standard's own prenex example (QCIR-G14 §3.1):
-#   forall v1. exists v2 v3. (v1 & v2) | (!v1 & !v2 & v3)
-forall(v1)
-exists(v2, v3)
-output(g3)
-g1 = and(v1, v2)
-g2 = and(-v1, -v2, v3)
-g3 = or(g1, g2)

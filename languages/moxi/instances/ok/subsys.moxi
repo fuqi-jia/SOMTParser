@@ -1,6 +1,0 @@
-(define-system child :input ((a Bool)) :output ((b Bool)) :trans (= b' a))
-(define-system parent
-  :input ((x Bool)) :output ((y Bool))
-  :subsys (c (child x y)))
-(check-system parent :input ((x Bool)) :output ((y Bool))
-  :reachable (low (not y)) :query (q (low)))

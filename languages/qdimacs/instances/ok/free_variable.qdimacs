@@ -1,6 +1,0 @@
-c qdimacs.md §4.5. Variable 2 occurs in the matrix and in no quantifier block.
-c QDIMACS 1.1 binds it existentially in the outermost block, together with 1.
-c QCIR instead retains unquantified non-gate variables as free declarations.
-p cnf 2 1
-e 1 0
-1 2 0

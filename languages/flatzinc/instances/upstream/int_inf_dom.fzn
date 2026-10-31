@@ -1,3 +1,0 @@
-var int: x:: output_var;
-constraint int_le(0,x);
-solve  satisfy;

@@ -1,2 +1,0 @@
-n = 5;
-constraint x > 0;

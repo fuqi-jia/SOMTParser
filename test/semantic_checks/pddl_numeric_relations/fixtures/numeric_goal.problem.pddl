@@ -1,1 +1,0 @@
-(define (problem p) (:domain numeric) (:init (= (x) 2) (= (y) 3)) (:goal (< (+ (x) 0.5) (y))) (:metric minimize (/ (+ (x) (y)) 2)))

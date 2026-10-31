@@ -1,5 +1,0 @@
-c `p cnf V C` in a .wcnf file: unweighted MaxSAT. Every clause is soft at
-c weight 1, and no clause carries a leading weight.
-p cnf 2 2
-1 2 0
--1 -2 0

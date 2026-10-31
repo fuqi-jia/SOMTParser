@@ -1,5 +1,4 @@
 #include "somtparser/frontend/parser.h"
-#include "somtparser/lowering/omt_emitter.h"
 #include "test_helpers.h"
 
 #include <string>
@@ -128,7 +127,15 @@ static void testBvFpDefaultOrderRoundTrip() {
             "(set-logic QF_BV)(declare-const x (_ BitVec 8))(minimize x)",
             "(set-logic QF_BV)(declare-const x (_ BitVec 8))(maximize x)",
             "(set-logic QF_FP)(declare-const x (_ FloatingPoint 8 24))(minimize x)",
-            "(set-logic QF_FP)(declare-const x (_ FloatingPoint 8 24))(maximize x)"}) {
+            "(set-logic QF_FP)(declare-const x (_ FloatingPoint 8 24))(maximize x)",
+            "(set-logic ALL)(declare-const x (_ BitVec 8))"
+            "(define-objective cost OBJECTIVE_MIN x)(optimize-sat cost)",
+            "(set-logic ALL)(declare-const x (_ BitVec 8))"
+            "(define-objective cost OBJECTIVE_MAX x)(optimize-sat cost)",
+            "(set-logic ALL)(declare-const x (_ FloatingPoint 8 24))"
+            "(define-objective cost OBJECTIVE_MIN x)(optimize-sat cost)",
+            "(set-logic ALL)(declare-const x (_ FloatingPoint 8 24))"
+            "(define-objective cost OBJECTIVE_MAX x)(optimize-sat cost)"}) {
         Parser parser;
         VERIFY(parser.parseStr(script));
         VERIFY(parser.getObjectives().size() == 1);
@@ -139,7 +146,7 @@ static void testBvFpDefaultOrderRoundTrip() {
             ? (original->isMinimize() ? COMP_KIND::COMP_BV_ULT : COMP_KIND::COMP_BV_UGT)
             : (original->isMinimize() ? COMP_KIND::COMP_FP_LT : COMP_KIND::COMP_FP_GT);
         VERIFY(original->getCompareOperator() == expected_comparison);
-        std::string output = parser.dumpSMT2(Lower::OmtDialect::Gomt);
+        std::string output = parser.dumpSMT2();
         for (size_t generation = 0; generation < 2; ++generation) {
             Parser reader;
             VERIFY(reader.parseStr(output));
@@ -150,7 +157,7 @@ static void testBvFpDefaultOrderRoundTrip() {
             VERIFY(objective->getObjectiveTerm()->getName() == original_term->getName());
             VERIFY(objective->getObjectiveTerm()->getKind() == original_term->getKind());
             VERIFY(objective->getObjectiveTerm()->getSort()->toString() == original_sort->toString());
-            output = reader.dumpSMT2(Lower::OmtDialect::Gomt);
+            output = reader.dumpSMT2();
         }
     }
 }

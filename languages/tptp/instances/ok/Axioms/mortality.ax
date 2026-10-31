@@ -1,1 +1,0 @@
-fof(mortality, axiom, ! [X] : (human(X) => mortal(X))).

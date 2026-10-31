@@ -1,6 +1,0 @@
-allowed = {8} union 9..10;
-memberships = [{1, 3}, {5, 8, 11}];
-cube = array3d(1..2, 1..2, 1..2, [1, 2, 3, 4, 5, 6, 7, 8]);
-Colour = {red, blue};
-chosen = red;
-label = "λ data";

@@ -1,2 +1,0 @@
-% Plain list data has the default 1..3 index set and matches needs_array_data.mzn.
-w = [3, 7, 5];

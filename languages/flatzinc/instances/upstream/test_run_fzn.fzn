@@ -1,2 +1,0 @@
-var 1..3: x:: output_var;
-solve :: int_search([x], input_order, indomain_min, complete) satisfy;

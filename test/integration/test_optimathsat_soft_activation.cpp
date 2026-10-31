@@ -1,5 +1,4 @@
 #include "somtparser/frontend/parser.h"
-#include "somtparser/lowering/omt_emitter.h"
 #include "test_helpers.h"
 
 #include <string>
@@ -27,19 +26,14 @@ static void testActivationOrderAndRoundTrip() {
     VERIFY(objectives[0]->isMinimize());
     VERIFY(objectives[1]->isMaxSAT());
     VERIFY(objectives[1]->getGroupID() == "preferred");
-    const auto z3 = parser.dumpSMT2(Lower::OmtDialect::Z3);
+    const auto z3 = parser.dumpSMT2();
     VERIFY(count(z3, "(minimize ") == 1);
     VERIFY(count(z3, "(assert-soft ") == 2);
     VERIFY(z3.find("(minimize x") < z3.find("(assert-soft p"));
-    const auto oms = parser.dumpSMT2(Lower::OmtDialect::OptiMathSAT);
-    VERIFY(count(oms, "(set-option :produce-models true)") == 1);
-    VERIFY(count(oms, "(minimize preferred)") == 1);
-    VERIFY(count(oms, "(assert-soft ") == 2);
     Parser reader;
-    VERIFY(reader.parseStr(oms));
-    VERIFY(reader.getObjectives().size() == 2);
-    VERIFY(reader.getObjectives()[1]->isMaxSAT());
-    VERIFY(reader.dumpSMT2(Lower::OmtDialect::OptiMathSAT) == oms);
+    VERIFY(reader.parseStr(z3));
+    VERIFY(reader.getSoftAssertions().size() == 2);
+    VERIFY(reader.dumpSMT2() == z3);
 }
 
 static void testDefaultAndQuotedGroups() {
@@ -48,11 +42,11 @@ static void testDefaultAndQuotedGroups() {
     VERIFY(parser.getObjectives().size() == 1);
     VERIFY(parser.getObjectives()[0]->isMaxSAT());
     VERIFY(parser.getObjectives()[0]->getGroupID().empty());
-    const auto oms = parser.dumpSMT2(Lower::OmtDialect::OptiMathSAT);
-    VERIFY(count(oms, "(minimize ") == 1);
+    const auto output = parser.dumpSMT2();
+    VERIFY(count(output, "(assert-soft ") == 1);
     Parser reader;
-    VERIFY(reader.parseStr(oms));
-    VERIFY(reader.getObjectives()[0]->isMaxSAT());
+    VERIFY(reader.parseStr(output));
+    VERIFY(reader.getSoftAssertions().size() == 1);
     Parser quoted;
     VERIFY(quoted.parseStr("(declare-const p Bool)(assert-soft p :id |soft cost|)(minimize |soft cost|)"));
     VERIFY(quoted.getObjectives()[0]->isMaxSAT());
@@ -77,7 +71,7 @@ static void testDeclaredSymbolsWinAndAttributesFail() {
     VERIFY(rejected.parseStr("(minimize cost)"));
     VERIFY(!rejected.parseStr("(minimize cost)"));
     VERIFY(rejected.getObjectives().size() == 1);
-    VERIFY(count(rejected.dumpSMT2(Lower::OmtDialect::Z3), "(assert-soft ") == 1);
+    VERIFY(count(rejected.dumpSMT2(), "(assert-soft ") == 1);
 }
 
 int main() {

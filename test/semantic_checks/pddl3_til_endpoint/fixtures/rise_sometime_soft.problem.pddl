@@ -1,5 +1,0 @@
-(define (problem rise_sometime_soft) (:domain til-endpoint)
-  (:init (g) (at 10 (p)))
-  (:goal (g))
-  (:constraints (preference late (sometime (p))))
-  (:metric minimize (+ total-time (* 7 (is-violated late)))))
