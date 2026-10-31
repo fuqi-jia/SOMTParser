@@ -1,0 +1,13 @@
+(declare-enum-sort State (Start Active Done))
+
+(define-system system
+  :output (( out State ))
+  :init (= out Start)
+  :trans (= out' (ite (= out Start) Active Done))
+)
+
+(check-system system
+  :output (( out State ))
+  :reachable (rch (= out Done))
+  :query (q (rch))
+)

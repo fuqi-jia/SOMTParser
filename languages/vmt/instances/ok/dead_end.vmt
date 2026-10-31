@@ -1,0 +1,9 @@
+; The initial state violates the property, but a path cannot be extended to
+; depth 2: false transitions to true and true has no successor. A correct
+; "within depth" query therefore remains SAT at bmc_depth=2.
+(declare-const s Bool)
+(declare-const s.next Bool)
+(define-fun sv () Bool (! s :next s.next))
+(define-fun init () Bool (! (not s) :init true))
+(define-fun trans () Bool (! (and (not s) s.next) :trans true))
+(define-fun prop () Bool (! s :invar-property 0))

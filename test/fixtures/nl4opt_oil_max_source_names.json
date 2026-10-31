@@ -1,0 +1,21 @@
+{
+  "source": "A car manufacturer makes two types of car oils: Oil Max and Oil Max Pro. A container of Oil Max contains 46 grams of substance A, 43 grams of substance B and 56 grams of substance C. A container of Oil Max Pro contains 13 grams of substance A, 4 grams of substance B and 45 grams of substance C. The car manufacturer has 1345 grams of substance A, 346 grams of substance B, 1643 grams of substance C. In addition, the profit per container of Oil Max is $10 and the profit per container of Oil Max Pro is $15. How many containers of each of oil should the car manufacturer make to maximize profit?",
+  "source_sha256": "8e2a1e115c498530ec73a5a61c7001d7700fa03b7554aebfc8be747fa140dfaa",
+  "declarations": [
+    {
+      "lower": "0",
+      "name": "oil_max_containers",
+      "sort": "Real"
+    },
+    {
+      "lower": "0",
+      "name": "oil_max_pro_containers",
+      "sort": "Real"
+    }
+  ],
+  "aliases": {
+    "Oil Max": 0,
+    "Oil Max Pro": 1
+  },
+  "formula_or_outcome_fields_included": false
+}

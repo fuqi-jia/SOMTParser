@@ -63,10 +63,13 @@ conaninfo.txt
 *.cache
 *.cmake
 !CMakeLists.txt
-!cmake/*.cmake 
+!cmake/*.cmake
+!tools/test/*.cmake
 
-# Doxygen
-docs/
+# Doxygen (Doxyfile: OUTPUT_DIRECTORY=docs, HTML_OUTPUT=html, LATEX_OUTPUT=latex).
+# Ignore only the generated subtrees -- `docs/` itself holds hand-written docs.
+docs/html/
+docs/latex/
 
 # vscode
 .vscode/
@@ -77,13 +80,23 @@ conanbuildinfo.txt
 conaninfo.txt
 
 # markdown
+# Scratch notes at the repo root stay untracked, but real documentation does not.
 *.md
 !README.md
+!CONTRIBUTORS.md
+!docs/**/*.md
+!languages/**/*.md
+!tools/**/*.md
+!skills/**/*.md
+!AGENTS.md
 # python
 __pycache__/
 *.pyc
 dist/
 *.egg-info/
 
-# Claude Code local state
+# Raw experiment evidence is archived as private release assets with SHA-256 receipts.
+/artifact/
+
+# Local assistant state
 .claude/

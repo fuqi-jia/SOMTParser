@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace SOMTParser {
@@ -43,6 +44,8 @@ public:
     SymbolManager();
 
     void reserve(size_t capacity);
+    /** Remove all declarations, definitions and lexical bindings. */
+    void clear();
 
     // --- Resolve (lookup only; returns stored node/sort, does not use NodeManager/SortManager) ---
     /** Full resolution: placeholder -> preserving_let -> let -> fun_key -> fun_var -> quant_var -> var_names -> |x|. Returns nullptr if not found. */
@@ -74,6 +77,13 @@ public:
 
     // --- Sort (user-defined sort names) ---
     void registerSort(const std::string& name, const std::shared_ptr<Sort>& sort);
+    /** Temporarily shadow a sort name without recording a top-level declaration
+     *  order entry. The return value is the prior binding, or nullptr. Pair
+     *  with restoreTemporarySort() at the lexical scope boundary. */
+    std::shared_ptr<Sort> bindTemporarySort(
+        const std::string& name, const std::shared_ptr<Sort>& sort);
+    void restoreTemporarySort(const std::string& name,
+                              const std::shared_ptr<Sort>& previous);
     bool hasSort(const std::string& name) const;
     void removeSort(const std::string& name);
 
@@ -107,6 +117,8 @@ public:
     // --- Function names list ---
     void addFunctionName(const std::string& name);
     const std::vector<std::string>& getFunctionNames() const;
+    /** Exact stored-key lookup used while streaming recorded function names. */
+    std::shared_ptr<DAGNode> getFunctionByRecordedName(const std::string& name) const;
     /** Returns function nodes in the same order as getFunctionNames(). Requires no NodeManager. */
     std::vector<std::shared_ptr<DAGNode>> getFunctions() const;
     bool hasFunctionName(const std::string& name) const;
@@ -161,6 +173,10 @@ private:
     std::unordered_map<std::string, std::shared_ptr<DAGNode>> temp_var_names_;
     std::unordered_map<std::string, std::shared_ptr<DAGNode>> placeholder_var_names_;
     std::vector<std::string> function_names_;
+    /** Membership side-table for function_names_, so addFunctionName can be
+     *  idempotent the way registerSort already is without an O(n) scan per
+     *  declaration. A duplicate entry would emit the same declare-fun twice. */
+    std::unordered_set<std::string> function_names_seen_;
     std::vector<std::vector<std::string>> rec_fun_groups_;
     std::unordered_map<std::string, size_t> rec_fun_group_of_;
     std::vector<std::shared_ptr<DAGNode>> static_functions_;

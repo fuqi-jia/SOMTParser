@@ -88,6 +88,7 @@ namespace SOMTParser{
         
         // ARRAY OPERATORS (in parseOper)
         NT_SELECT,NT_STORE,
+        NT_ARRAY_MAP_AND, NT_ARRAY_MAP_OR, NT_ARRAY_MAP_NOT,
         
         // STRING OPERATORS (in parseOper)
         NT_STR_LEN,NT_STR_CONCAT,NT_STR_SUBSTR,NT_STR_INDEXOF,NT_STR_CHARAT,NT_STR_UPDATE,NT_STR_REPLACE,NT_STR_REPLACE_ALL,
@@ -103,6 +104,15 @@ namespace SOMTParser{
         
         // STRING RE FUNCTIONS (in parseOper with args and params)
         NT_REG_LOOP,
+
+        // SET OPERATIONS (in parseOper)
+        // The finite-set theory as cvc5 spells it. Sets had a SORT_KIND and no
+        // operators at all, which made (Set Int) a sort a model could declare
+        // and nothing could constrain; docs/languages/smtlib2.md recorded that
+        // as the last open row of its gap table.
+        NT_SET_SINGLETON, NT_SET_UNION, NT_SET_INTER, NT_SET_MINUS,
+        NT_SET_MEMBER, NT_SET_SUBSET, NT_SET_CARD, NT_SET_INSERT,
+        NT_SET_COMPLEMENT,
         
         // FUNCTION OPERATORS (in parseOper)
         NT_FUNC_APPLY,NT_FUNC_DEC,NT_FUNC_DEF,
@@ -137,6 +147,12 @@ namespace SOMTParser{
         
         // STRING RE CONSTANTS
         NT_REG_NONE,NT_REG_ALL,NT_REG_ALLCHAR,
+
+        // SET CONSTANTS
+        // Nullary and sort-indexed: `(as set.empty (Set Int))`. Outside the
+        // parseOper section for the same reason NT_REG_NONE is -- they take a
+        // sort annotation rather than arguments.
+        NT_SET_EMPTY, NT_SET_UNIVERSE,
         
         // INTERVAL
         NT_MAX, NT_MIN,
@@ -324,6 +340,17 @@ namespace SOMTParser{
         {"bvsrem", NODE_KIND::NT_BV_SREM},
         {"bvumod", NODE_KIND::NT_BV_UMOD},
         {"bvsmod", NODE_KIND::NT_BV_SMOD},
+        // Z3's explicit "hardware interpretation" operators occur in the
+        // official CHC-COMP BV corpus. Their only distinction from older
+        // under-specified division symbols is their fixed divisor-zero value.
+        // SMT-LIB 2.6 and later give the public operators those same total
+        // values, which this engine implements, so canonicalizing the aliases
+        // to the public names is exact.
+        {"bvudiv_i", NODE_KIND::NT_BV_UDIV},
+        {"bvurem_i", NODE_KIND::NT_BV_UREM},
+        {"bvsdiv_i", NODE_KIND::NT_BV_SDIV},
+        {"bvsrem_i", NODE_KIND::NT_BV_SREM},
+        {"bvsmod_i", NODE_KIND::NT_BV_SMOD},
         {"bvshl", NODE_KIND::NT_BV_SHL},
         {"bvlshr", NODE_KIND::NT_BV_LSHR},
         {"bvashr", NODE_KIND::NT_BV_ASHR},
@@ -341,6 +368,7 @@ namespace SOMTParser{
         {"bv2int", NODE_KIND::NT_BV_TO_INT},
         {"int2bv", NODE_KIND::NT_INT_TO_BV},
         // SMT-LIB 2.7 spellings (ported from the SMTStabilizer fork)
+        {"int_to_bv", NODE_KIND::NT_INT_TO_BV},
         {"ubv_to_int", NODE_KIND::NT_UBV_TO_INT},
         {"sbv_to_int", NODE_KIND::NT_SBV_TO_INT},
         {"extract", NODE_KIND::NT_BV_EXTRACT},
@@ -431,6 +459,15 @@ namespace SOMTParser{
         {"str.from_int", NODE_KIND::NT_STR_FROM_INT},
         {"str.to_int", NODE_KIND::NT_STR_TO_INT},
         {"str.to_re", NODE_KIND::NT_STR_TO_REG},
+        {"set.singleton", NODE_KIND::NT_SET_SINGLETON},
+        {"set.union", NODE_KIND::NT_SET_UNION},
+        {"set.inter", NODE_KIND::NT_SET_INTER},
+        {"set.minus", NODE_KIND::NT_SET_MINUS},
+        {"set.member", NODE_KIND::NT_SET_MEMBER},
+        {"set.subset", NODE_KIND::NT_SET_SUBSET},
+        {"set.card", NODE_KIND::NT_SET_CARD},
+        {"set.insert", NODE_KIND::NT_SET_INSERT},
+        {"set.complement", NODE_KIND::NT_SET_COMPLEMENT},
         {"str.to.re", NODE_KIND::NT_STR_TO_REG},    // SMT-LIB 2.5 alias
         {"str.to_code", NODE_KIND::NT_STR_TO_CODE},
         {"str.from_code", NODE_KIND::NT_STR_FROM_CODE},

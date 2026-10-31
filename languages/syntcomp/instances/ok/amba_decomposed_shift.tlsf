@@ -1,0 +1,29 @@
+INFO {
+  TITLE:       "Amba AHB - Decomposed - Shift"
+  DESCRIPTION: "Shift component of the decomposed Amba AHB Arbiter"
+  SEMANTICS:   Mealy
+  TARGET:      Mealy
+}
+
+MAIN {
+  INPUTS {
+    HREADY;
+    LOCKED;
+  } 
+
+  OUTPUTS {
+    HMASTLOCK;
+  }
+
+  INVARIANTS {
+    // if HREADY is high, the component copies LOCKED to HMASTLOCK, shifted by one time step
+    HREADY -> (X HMASTLOCK <-> LOCKED);
+
+    // if HREADY is low, the old value of HMASTLOCK is copied
+    !HREADY -> (X HMASTLOCK <-> HMASTLOCK);
+  }
+}
+//#!SYNTCOMP
+//STATUS : realizable
+//REF_SIZE : 4
+//#.

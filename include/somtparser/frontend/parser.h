@@ -41,9 +41,15 @@
 #include "somtparser/frontend/symbol_manager.h"
 #include "somtparser/frontend/command.h"
 #include <exception>
+#include <iosfwd>
 
 namespace SOMTParser{
     #undef assert
+
+    namespace Lang { struct SourceUnit; }
+    namespace Uir  { class TranslationReport; }
+    namespace Lower { enum class OmtDialect; struct RenderedOmt; }
+
     enum class SCAN_MODE {
         SM_COMMON,
         SM_SYMBOL,
@@ -84,7 +90,7 @@ namespace SOMTParser{
         CT_GET_OBJECTIVES, CT_ASSERT_SOFT, 
         CT_DEFINE_OBJ, CT_DEFINE_MIN_OBJ, CT_DEFINE_MAX_OBJ,
         CT_MINIMIZE, CT_MAXIMIZE, CT_LEX_OPTIMIZE, CT_PARETO_OPTIMIZE, CT_BOX_OPTIMIZE, CT_MINMAX, CT_MAXMIN, CT_MAXSAT, CT_MINSAT, CT_OPTIMIZE,
-        CT_DECLARE_HEAP
+        CT_DECLARE_HEAP, CT_DECLARE_CODATATYPES
         // CT_LEX_MAXIMIZE, CT_PARETO_MINIMIZE, CT_PARETO_MAXIMIZE, 
         // CT_BOX_MINIMIZE, CT_BOX_MAXIMIZE, CT_MINMAX, CT_MAXMIN
     };
@@ -116,9 +122,41 @@ namespace SOMTParser{
     };
 
     /** Thrown when parsing fails so that parse() can return false instead of exit(0). */
+    /**
+     * Thrown when a script cannot be read.
+     *
+     * It carries WHY, because the two reasons feed different conclusions and
+     * a caller that cannot tell them apart must report one of them wrongly.
+     * An UNKNOWN_SYMBOL is a construct this build does not implement -- the
+     * script may be perfectly well formed, as every cvc5 regression using
+     * `set.is_empty` or `declare-codatatypes` is -- and is a statement about
+     * the reader. A SYNTAX error is a statement about the file. A frontend
+     * that buckets the first as the second reports a valid benchmark as
+     * malformed input, and the corpus's failure-cause distribution, which is
+     * the output a corpus exists to produce, is wrong by exactly that much.
+     *
+     * The detail used to reach only `std::cerr`, so no caller could act on
+     * it. `what()` keeps its previous text for anything that logged it.
+     */
     class ParseErrorException : public std::exception {
     public:
+        enum class Kind { SYNTAX, UNKNOWN_SYMBOL, ARITY };
+
+        ParseErrorException() = default;
+        ParseErrorException(Kind kind, std::string symbol, std::size_t line)
+            : kind_(kind), symbol_(std::move(symbol)), line_(line) {}
+
         const char* what() const noexcept override { return "parse error"; }
+
+        Kind kind() const noexcept { return kind_; }
+        /** The construct named in the error, when there is one. */
+        const std::string& symbol() const noexcept { return symbol_; }
+        std::size_t line() const noexcept { return line_; }
+
+    private:
+        Kind        kind_ = Kind::SYNTAX;
+        std::string symbol_;
+        std::size_t line_ = 0;
     };
 
     /*
@@ -231,13 +269,26 @@ namespace SOMTParser{
         std::shared_ptr<Sort>                         pending_command_sort_;
         std::vector<std::shared_ptr<DAGNode>>         pending_command_params_;
         std::string                                   pending_command_logic_;
+        size_t                                        pending_push_pop_level_ = 1;
         std::string                                   source_text_;
+        // Command ranges advance through one source; avoid rescanning every
+        // prefix. Reset this cursor whenever source_text_ changes.
+        mutable SourcePosition                        source_position_;
         std::string                                   source_name_ = "<memory>";
+        ParseErrorException                           last_parse_error_;
+        bool                                          has_parse_error_ = false;
         size_t                                        next_command_index_ = 0;
+
+        /** Report from the last parseAny() call. */
+        std::shared_ptr<Uir::TranslationReport>       last_report_;
 
         SourcePosition sourcePosition(size_t offset) const;
         Command makeCommand(CMD_TYPE type, size_t begin_offset,
                             size_t end_offset, size_t begin_line);
+        void writeSMT2State(std::ostream& out,
+                           const std::unordered_set<std::string>& bound_parameters,
+                           bool include_objectives, Lower::OmtDialect dialect);
+        Lower::RenderedOmt renderSMT2Objectives(Lower::OmtDialect dialect);
 
     public:
         
@@ -284,6 +335,38 @@ namespace SOMTParser{
          */
         bool parseStr(const std::string& constraint,
                       const std::string& source_name = "<memory>");
+
+        /**
+         * Why the last `parse`/`parseStr` returned false, or nullptr if the
+         * last one succeeded.
+         *
+         * `parse`/`parseStr` catch ParseErrorException and return false, which
+         * is the documented contract -- but that discarded the reason, so a
+         * caller could only report "not a well-formed script" whatever had
+         * happened. An unknown symbol means this build does not implement the
+         * construct; the script may be entirely well formed, as every cvc5
+         * regression using `set.is_empty` is. Reporting that as malformed
+         * input is a wrong answer about a valid file.
+         */
+        const ParseErrorException* lastParseError() const noexcept {
+            return has_parse_error_ ? &last_parse_error_ : nullptr;
+        }
+
+        /**
+         * Detect the input language via the registry and translate into this
+         * Parser. A .smt2 file not claimed by CHC sniffing takes the existing
+         * SMT-LIB fast path at no extra cost. With no language library linked
+         * the registry is empty and only SMT-LIB is recognised.
+         *
+         * Declared here but implemented in src/frontend/base_parser.cpp against
+         * a forward declaration, so core keeps no compile-time dependency on
+         * any concrete language.
+         */
+        bool parseAny(const std::string& path);
+        bool parseAny(const Lang::SourceUnit& unit);
+
+        /** Report from the last parseAny; language_id is empty if never called. */
+        const Uir::TranslationReport& lastTranslationReport() const;
 
         /** Load SMT-LIB text for command-at-a-time parsing with nextCommand(). */
         bool loadStr(const std::string& constraint,
@@ -773,6 +856,12 @@ namespace SOMTParser{
          */
         std::shared_ptr<DAGNode> mkFuncRec(const std::string &name, const std::vector<std::shared_ptr<DAGNode>> &params, std::shared_ptr<Sort> out_sort, std::shared_ptr<DAGNode> body);
 
+        /** Record a checked group of already-built `define-fun-rec` nodes.
+         *  All names must be distinct, defined recursively, and not already in
+         *  another group. The parser dumper then emits one `define-funs-rec`.
+         *  This records equation grouping; it does not prove termination. */
+        bool mkFuncRecGroup(const std::vector<std::string>& names);
+
         /**
          * @brief Create a recursive function application
          * 
@@ -908,6 +997,31 @@ namespace SOMTParser{
          * @return Array sort
          */
         std::shared_ptr<Sort> mkArraySort(std::shared_ptr<Sort> index, std::shared_ptr<Sort> elem);
+        /** (Set T). */
+        std::shared_ptr<Sort> mkSetSort(std::shared_ptr<Sort> elem);
+
+        // ---- Finite sets -------------------------------------------------
+        // The theory had a SORT_KIND and nothing else: no NODE_KINDs, no
+        // operators, no builders, so (Set Int) was a sort a model could declare
+        // and nothing could constrain. docs/languages/smtlib2.md recorded that
+        // as the last open row of its gap table.
+        /** `(as set.empty (Set T))`. @p set_sort must be a set sort. */
+        std::shared_ptr<DAGNode> mkSetEmpty(std::shared_ptr<Sort> set_sort);
+        /** `(as set.universe (Set T))`. */
+        std::shared_ptr<DAGNode> mkSetUniverse(std::shared_ptr<Sort> set_sort);
+        /** `(set.singleton x)`. */
+        std::shared_ptr<DAGNode> mkSetSingleton(std::shared_ptr<DAGNode> elem);
+        std::shared_ptr<DAGNode> mkSetUnion(const std::vector<std::shared_ptr<DAGNode>>& params);
+        std::shared_ptr<DAGNode> mkSetInter(const std::vector<std::shared_ptr<DAGNode>>& params);
+        std::shared_ptr<DAGNode> mkSetMinus(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r);
+        /** `(set.member x s)` -- element first, as SMT-LIB has it. */
+        std::shared_ptr<DAGNode> mkSetMember(std::shared_ptr<DAGNode> elem, std::shared_ptr<DAGNode> set);
+        std::shared_ptr<DAGNode> mkSetSubset(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r);
+        /** `(set.card s)` -> Int. */
+        std::shared_ptr<DAGNode> mkSetCard(std::shared_ptr<DAGNode> set);
+        /** `(set.insert x1 ... xn s)` -- elements first, the set last. */
+        std::shared_ptr<DAGNode> mkSetInsert(const std::vector<std::shared_ptr<DAGNode>>& params);
+        std::shared_ptr<DAGNode> mkSetComplement(std::shared_ptr<DAGNode> set);
 
         // declare var
         /**
@@ -2857,6 +2971,9 @@ namespace SOMTParser{
          * @return Array store node (l[r] = v)
          */
         std::shared_ptr<DAGNode> mkStore(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r, std::shared_ptr<DAGNode> v); // l[r] = v
+        /** Pointwise Boolean array map, preserving the array index sort.
+         *  Supports the and/or/not maps emitted by finite-set lowering. */
+        std::shared_ptr<DAGNode> mkArrayMap(const std::string& op, const std::vector<std::shared_ptr<DAGNode>>& arrays);
 
         // TERM ANNOTATIONS
         /** @brief Create a :pattern annotation node holding the trigger terms */
@@ -3072,7 +3189,19 @@ namespace SOMTParser{
          * @return String less-than node (str.<(l, r))
          */
         std::shared_ptr<DAGNode> mkStrLt(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r); // str.<(l, r)
-        
+
+        /**
+         * @brief Create a string less-than chain
+         *
+         * str.< is :chainable in the SMT-LIB strings theory: three or more
+         * arguments mean the conjunction of adjacent pairs, so
+         * str.<(a, b, c) is (and str.<(a, b) str.<(b, c)).
+         *
+         * @param params String operands in order (at least two)
+         * @return String less-than node, or a conjunction of adjacent pairs
+         */
+        std::shared_ptr<DAGNode> mkStrLt(const std::vector<std::shared_ptr<DAGNode>>& params);
+
         /**
          * @brief Create a string less-than-or-equal node
          * 
@@ -3081,7 +3210,19 @@ namespace SOMTParser{
          * @return String less-than-or-equal node (str.<=(l, r))
          */
         std::shared_ptr<DAGNode> mkStrLe(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r); // str.<=(l, r)
-        
+
+        /**
+         * @brief Create a string less-than-or-equal chain
+         *
+         * str.<= is :chainable in the SMT-LIB strings theory: three or more
+         * arguments mean the conjunction of adjacent pairs, so
+         * str.<=(a, b, c) is (and str.<=(a, b) str.<=(b, c)).
+         *
+         * @param params String operands in order (at least two)
+         * @return String less-than-or-equal node, or a conjunction of adjacent pairs
+         */
+        std::shared_ptr<DAGNode> mkStrLe(const std::vector<std::shared_ptr<DAGNode>>& params);
+
         /**
          * @brief Create a string greater-than node
          * 
@@ -3090,7 +3231,19 @@ namespace SOMTParser{
          * @return String greater-than node (str.>(l, r))
          */
         std::shared_ptr<DAGNode> mkStrGt(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r); // str.>(l, r)
-        
+
+        /**
+         * @brief Create a string greater-than chain
+         *
+         * str.> is not in the SMT-LIB strings theory; it is accepted as input
+         * leniency and given the same chainable shape as str.<: three or more
+         * arguments mean the conjunction of adjacent pairs.
+         *
+         * @param params String operands in order (at least two)
+         * @return String greater-than node, or a conjunction of adjacent pairs
+         */
+        std::shared_ptr<DAGNode> mkStrGt(const std::vector<std::shared_ptr<DAGNode>>& params);
+
         /**
          * @brief Create a string greater-than-or-equal node
          * 
@@ -3099,7 +3252,19 @@ namespace SOMTParser{
          * @return String greater-than-or-equal node (str.>=(l, r))
          */
         std::shared_ptr<DAGNode> mkStrGe(std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r); // str.>=(l, r)
-        
+
+        /**
+         * @brief Create a string greater-than-or-equal chain
+         *
+         * str.>= is not in the SMT-LIB strings theory; it is accepted as input
+         * leniency and given the same chainable shape as str.<=: three or more
+         * arguments mean the conjunction of adjacent pairs.
+         *
+         * @param params String operands in order (at least two)
+         * @return String greater-than-or-equal node, or a conjunction of adjacent pairs
+         */
+        std::shared_ptr<DAGNode> mkStrGe(const std::vector<std::shared_ptr<DAGNode>>& params);
+
         // STRINGS PROPERTIES
         /**
          * @brief Create a string in-regex check node
@@ -3392,20 +3557,52 @@ namespace SOMTParser{
         std::shared_ptr<DAGNode> mkQuantVar(const std::string& name, std::shared_ptr<Sort> sort);
         
         /**
-         * @brief Create a forall node
-         * 
-         * @param params List of (variable, sort) pairs
-         * @return Forall node (forall((var1, sort1), (var2, sort2), ..., body))
+         * @brief Create a forall node.
+         *
+         * **`params[0]` is the BODY; `params[1..]` are the bound variables**, each
+         * built with mkQuantVar. That is the reverse of the surface syntax, and
+         * the order this comment used to give -- "(forall ((var1 sort1) ...)
+         * body)" -- described the syntax rather than the child order. Following
+         * it builds a node that type-checks and prints as nonsense: src/ir/dag.cpp
+         * takes getChild(0) as the body and getChild(1..) as the binders, so
+         * `mkForall({x, body})` came out as `(forall ((q Bool)) x)` -- the body
+         * listed as a binder and a bound variable as the body. Well-formed
+         * output, different formula, no error anywhere.
+         *
+         * The parse path builds it correctly by inserting the body at the front
+         * (src/frontend/base_parser.cpp:2704) and so does the HIR lowering
+         * (src/lowering/hir_to_parser.cpp:270), which hit this and worked around
+         * it at the call site; the declaration is fixed here so the next caller
+         * does not have to rediscover it.
+         *
+         * @param params { body, var1, var2, ... }
+         * @return Forall node
          */
-        std::shared_ptr<DAGNode> mkForall(const std::vector<std::shared_ptr<DAGNode>> &params); // forall((var1, sort1), (var2, sort2), ..., body)
+        std::shared_ptr<DAGNode> mkForall(const std::vector<std::shared_ptr<DAGNode>> &params); // { body, var1, var2, ... }
         
         /**
-         * @brief Create an exists node
-         * 
-         * @param params List of (variable, sort) pairs
-         * @return Exists node (exists((var1, sort1), (var2, sort2), ..., body))
+         * @brief Create a exists node.
+         *
+         * **`params[0]` is the BODY; `params[1..]` are the bound variables**, each
+         * built with mkQuantVar. That is the reverse of the surface syntax, and
+         * the order this comment used to give -- "(exists ((var1 sort1) ...)
+         * body)" -- described the syntax rather than the child order. Following
+         * it builds a node that type-checks and prints as nonsense: src/ir/dag.cpp
+         * takes getChild(0) as the body and getChild(1..) as the binders, so
+         * `mkExists({x, body})` came out as `(exists ((q Bool)) x)` -- the body
+         * listed as a binder and a bound variable as the body. Well-formed
+         * output, different formula, no error anywhere.
+         *
+         * The parse path builds it correctly by inserting the body at the front
+         * (src/frontend/base_parser.cpp:2704) and so does the HIR lowering
+         * (src/lowering/hir_to_parser.cpp:270), which hit this and worked around
+         * it at the call site; the declaration is fixed here so the next caller
+         * does not have to rediscover it.
+         *
+         * @param params { body, var1, var2, ... }
+         * @return Exists node
          */
-        std::shared_ptr<DAGNode> mkExists(const std::vector<std::shared_ptr<DAGNode>> &params); // exists((var1, sort1), (var2, sort2), ..., body)
+        std::shared_ptr<DAGNode> mkExists(const std::vector<std::shared_ptr<DAGNode>> &params); // { body, var1, var2, ... }
         
         // FUNCTION
         /**
@@ -3453,7 +3650,8 @@ namespace SOMTParser{
         size_t getScopeDepth() const { return context_.scope_stack_.size(); }
 
         /**
-         * @brief Reset assertions (keep declarations and options).
+         * @brief Clear assertion levels and local declarations; keep global
+         * declarations and options.
          * @return true on success.
          */
         bool resetAssertions();
@@ -4040,11 +4238,30 @@ namespace SOMTParser{
         std::string                             optionToString();
 
         /**
-         * @brief Dump the SMT2 representation of the parsed expressions
+         * @brief Dump the current assertion/optimization state as SMT-LIB.
+         * Preserves explicit and soft objective order and the final query's
+         * responses. This is a state snapshot, not replay of earlier scopes
+         * or checks; use getScript() for the ordered parsed command history.
          * 
          * @return String representation of the SMT2
          */
         std::string                             dumpSMT2();
+        std::string dumpSMT2(Lower::OmtDialect dialect);
+
+        /** Emit the complete script directly to a stream. */
+        void writeSMT2(std::ostream& out);
+        void writeSMT2(std::ostream& out, Lower::OmtDialect dialect);
+
+        /** Declarations and assertions without a query or exit. Module writers
+         * may omit constants that they bind as function parameters instead. */
+        std::string dumpSMT2Module(const std::unordered_set<std::string>& bound_parameters = {});
+
+        /** Emit declarations/assertions directly, without check-sat or exit. */
+        void writeSMT2Module(std::ostream& out,
+                             const std::unordered_set<std::string>& bound_parameters = {});
+        /** Declarations and hard assertions only, for a dialect writer that
+         * owns soft-constraint and objective emission. */
+        void writeSMT2HardModule(std::ostream& out);
 
         /**
          * @brief Dump the SMT2 representation of the parsed expressions to a file
@@ -4053,6 +4270,7 @@ namespace SOMTParser{
          * @return Filename
          */
         std::string                             dumpSMT2(const std::string& filename);
+        std::string dumpSMT2(const std::string& filename, Lower::OmtDialect dialect);
 
         /**
          * @brief Remove functions by name
@@ -4117,35 +4335,35 @@ namespace SOMTParser{
         /** Parse one <datatype_dec> ((ctor...)...) after its opening '('; register ctors/selectors/testers on @p dt_sort. */
         void                                    defineDatatypeConstructors(const std::shared_ptr<Sort>& dt_sort);
         /** Reads an optional `(par (X ...)` wrapper before a datatype's
-         *  constructor list and returns the parameter names, empty when the body
-         *  is not parametric. Leaves the buffer where the plain form would. */
+         *  constructor list and returns the parameter names, empty when the
+         *  body is not parametric. Leaves the buffer where the plain form would
+         *  have left it. */
         std::vector<std::string>                parseDatatypeParams();
+    public:
+        /** The sort parameters of a parametric datatype, in declaration order;
+         *  empty for an ordinary one. Public because the lift has to carry them
+         *  and a Sort records only the arity. */
+        /** Record a parametric datatype's parameter names. Used by the lowering,
+         *  which rebuilds a model rather than parsing a script. */
+        void                                    setDatatypeParams(const std::string& dt,
+                                                    const std::vector<std::string>& p) {
+            datatype_params_[dt] = p;
+        }
+        std::vector<std::string>                datatypeParams(const std::string& dt) const {
+            const auto it = datatype_params_.find(dt);
+            return it == datatype_params_.end() ? std::vector<std::string>{} : it->second;
+        }
+    private:
         /** Sort-parameter binding for an application of a parametric datatype's
          *  member. See the definition for how selectors, testers and
          *  constructors each determine it. */
         void                                    dtParamBinding(const std::shared_ptr<DAGNode>& fun,
                                                     const std::vector<std::shared_ptr<DAGNode>>& params,
                                                     std::unordered_map<std::string, std::shared_ptr<Sort>>& out);
-    public:
-        /** The result sort an application of @p fun should carry, with a
-         *  parametric datatype's parameters substituted. Returns the declared
-         *  sort unchanged for everything else. */
+        /** The result sort an application of @p fun should carry, with any
+         *  parametric datatype's parameters substituted. */
         std::shared_ptr<Sort>                   dtAppliedSort(const std::shared_ptr<DAGNode>& fun,
                                                     const std::vector<std::shared_ptr<DAGNode>>& params);
-        /** A parametric datatype's sort parameters, in declaration order; empty
-         *  for an ordinary one. A Sort records only the arity, so a caller that
-         *  needs the names has to ask here. */
-        std::vector<std::string>                datatypeParams(const std::string& dt) const {
-            const auto it = datatype_params_.find(dt);
-            return it == datatype_params_.end() ? std::vector<std::string>{} : it->second;
-        }
-        /** Record a parametric datatype's parameter names, for a caller that
-         *  builds a model programmatically rather than parsing a script. */
-        void                                    setDatatypeParams(const std::string& dt,
-                                                    const std::vector<std::string>& p) {
-            datatype_params_[dt] = p;
-        }
-    private:
         /** Sort-parameter names per parametric datatype, in declaration order.
          *  A Sort records its ARITY and not what its parameters were called, so
          *  dumpSMT2 could not otherwise write the `par` form back. */
@@ -4155,6 +4373,24 @@ namespace SOMTParser{
         // single_opt = (maximize <expr> [:comp <symbol>] [:epsilon <symbol>] [:M <symbol>] [:id <symbol>]) 
         //            | (minimize <expr> [:comp <symbol>] [:epsilon <symbol>] [:M <symbol>] [:id <symbol>])
         void                                    parseAssertSoft();
+public:
+        /**
+         * @brief Record a soft assertion programmatically.
+         *
+         * The parser's own assert-soft path went through parseAssertSoft, which
+         * reads from the token stream, so a caller building a MaxSAT problem in
+         * memory had nowhere to put one -- the same shape as ParseOptions::strict
+         * having no channel: a construct the engine models and the public API
+         * cannot reach.
+         *
+         * @param node   the soft constraint
+         * @param weight cost of violating it; 1 when omitted, as SMT-LIB has it
+         * @param group  optional :id, for group-level reasoning
+         */
+        void assertSoft(std::shared_ptr<DAGNode> node,
+                        std::shared_ptr<DAGNode> weight = nullptr,
+                        const std::string& group = "");
+private:
         // (maximize <expr> [:comp <symbol>] [:epsilon <symbol>] [:M <symbol>] [:id <symbol>])
         std::shared_ptr<Objective>              parseMaximize();
         // (minimize <expr> [:comp <symbol>] [:epsilon <symbol>] [:M <symbol>] [:id <symbol>])
@@ -4167,6 +4403,10 @@ namespace SOMTParser{
         std::shared_ptr<Objective>              parseMultiObj(const OPT_KIND& opt_type);
         // (define-objective <symbol> signle_opt [:id <symbol>])
         std::shared_ptr<Objective>              parseDefObj();
+        void parseGomtMultiObjective();
+        void parseGomtMaxSmtObjective();
+        void parseGomtOptimizeSat();
+        void parseObjectiveValueTerms();
         // (lex-optimize (<symbol>+) [:id <symbol>])
         std::shared_ptr<Objective>              parseLexOpt();
         // (pareto-optimize (<symbol>+) [:id <symbol>])

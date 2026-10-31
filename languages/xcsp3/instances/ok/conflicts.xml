@@ -1,0 +1,15 @@
+<instance format="XCSP3" type="CSP">
+  <variables>
+    <var id="a"> 0..2 </var>
+    <var id="b"> 0..2 </var>
+  </variables>
+  <constraints>
+    <!-- Forbids exactly these two. Every other pair stays allowed, which a
+         complement-of-supports reading would only reproduce over the full
+         Cartesian product. -->
+    <extension>
+      <list> a b </list>
+      <conflicts> (0,0)(1,1) </conflicts>
+    </extension>
+  </constraints>
+</instance>

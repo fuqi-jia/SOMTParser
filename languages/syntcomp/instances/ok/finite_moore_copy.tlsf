@@ -1,0 +1,10 @@
+INFO {
+  TITLE: "finite Moore copy"
+  SEMANTICS: Finite,Moore
+  TARGET: Moore
+}
+MAIN {
+  INPUTS { i; }
+  OUTPUTS { o; }
+  GUARANTEES { G(i <-> o); }
+}

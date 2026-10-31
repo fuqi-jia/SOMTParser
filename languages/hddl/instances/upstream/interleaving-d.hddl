@@ -1,0 +1,32 @@
+(define (domain test-domain)
+	(:requirements :typing :hierachie)
+	(:predicates
+		(p)
+		(q)
+		(r)
+	)
+
+	(:task t1)
+	(:task t2)
+
+	(:method method0
+		:task (t1)
+		:ordered-subtasks (and
+			(A)
+			(C)
+		)
+	)
+
+	(:method method1
+		:task (t2)
+		:ordered-subtasks (and
+			(B)
+			(D)
+		)
+	)
+
+	(:action A :precondition (and) :effect (and (p)))
+	(:action B :precondition (and (p)) :effect (and (q)))
+	(:action C :precondition (and (q)) :effect (and (r)))
+	(:action D :precondition (and (q)) :effect (and ))
+)

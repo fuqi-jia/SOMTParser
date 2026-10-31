@@ -1,0 +1,25 @@
+(set-logic QF_LRA)
+
+; One-step delay
+(define-system Delay :input ( (i Real) ) :output ( (o Real) )
+  :local ( (s Real) )
+  :inv (= s i) 
+  :init (= o 0)
+  :trans (= o' s)
+)
+
+; Two-step delay
+(define-system DoubleDelay :input ( (in Real) ) :output ( (out Real) )
+  :local ( (temp Real) )
+  :subsys  (D1 (Delay in temp))
+  :subsys  (D2 (Delay temp out))
+)
+
+(check-system DoubleDelay
+  :input ( (in Real) ) 
+  :output ( (out Real) )
+  :local ( (temp Real) )
+  :reachable (r1 (= out 10))
+  :reachable (r2 (= out (- 10)))
+  :queries ( (q1 (r1)) (q2 (r2)) )
+)

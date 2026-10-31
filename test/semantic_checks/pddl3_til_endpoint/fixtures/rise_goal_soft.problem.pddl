@@ -1,0 +1,5 @@
+(define (problem rise_goal_soft) (:domain til-endpoint)
+  (:init (g) (at 10 (p)))
+  (:goal (and (g) (preference wanted (p))))
+  (:constraints (and))
+  (:metric minimize (+ total-time (* 7 (is-violated wanted)))))

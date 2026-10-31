@@ -1,0 +1,6 @@
+(set-logic LIA)
+(declare-var g Int)
+(define-fun base () Bool (= g g))
+(synth-fun f () Bool ((B Bool (base))))
+(constraint f)
+(check-synth)

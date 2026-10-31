@@ -1,0 +1,5 @@
+(set-logic BVFPLRA)
+(declare-fun rm () RoundingMode)
+(declare-fun y () (_ FloatingPoint 11 53))
+(assert (fp.eq y ((_ to_fp 11 53) rm 2)))
+(check-sat)

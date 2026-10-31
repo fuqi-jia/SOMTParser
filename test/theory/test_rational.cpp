@@ -182,13 +182,13 @@ void test_parser_constant_folding() {
     VERIFY(node4->getValue()->getNumberValue().toRationalExact() ==
            HighPrecisionRational("-1/10"));
 
-    // (/ 0 10) -> 0
+    // (/ 0 10) -> 0.0 (Real)
     auto node5 = parser->mkExpr("(/ 0 10)");
     VERIFY(node5 != nullptr);
     VERIFY(node5->isCReal());
     std::string s5 = parser->toString(node5);
     std::cout << "  (/ 0 10) -> " << s5 << std::endl;
-    VERIFY(s5 == "0");
+    VERIFY(s5 == "0.0");
 
     // nested: (+ (/ 1 10) (/ 2 10))
     auto node6 = parser->mkExpr("(+ (/ 1 10) (/ 2 10))");

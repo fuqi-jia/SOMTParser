@@ -1,0 +1,6 @@
+c dimacs-cnf.md §4.1's trap, inherited. The empty clause is FALSE, so this
+c instance is unsatisfiable -- an answer, and a legal file. mkOp throws on an
+c empty argument list rather than inventing an identity.
+p cnf 1 1
+e 1 0
+0

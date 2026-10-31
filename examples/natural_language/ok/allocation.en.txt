@@ -1,0 +1,5 @@
+Domain Request consists of R1, R2.
+Domain Handler consists of H1, H2.
+Predicate handles has arguments Request, Handler.
+For every r in Request, There exists h in Handler such that handles(r,h).
+Find a solution.

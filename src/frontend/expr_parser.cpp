@@ -28,6 +28,7 @@
 #include "somtparser/core/timing.h"
 #include <stack>
 #include <cctype>
+#include <unordered_set>
 
 namespace SOMTParser{
 
@@ -37,49 +38,52 @@ namespace SOMTParser{
     // be confused with a user-declared function.
     static constexpr const char* DT_UPDATE_PREFIX = "\x01update-";
 
-    // State of the parser
+    // Every nested term, including binder and annotation operands, runs on
+    // this one machine. No special form calls parseExpr through a helper.
     enum class FrameState {
-        Start,
-        ReadingHead,           // reading head symbol
-        ProcessingSpecial,     // processing special syntax
-        ProcessingParams,      // processing parameter list
-        ProcessingBindings,    // processing let bindings
-        ProcessingLetBody,     // processing let body
-        ProcessingQuantVars,   // processing quantifier variables
-        ProcessingQuantBody,   // processing quantifier body
-        ProcessingParamFuncArgs, // processing parameter function arguments
-        ProcessingParamFuncParams, // processing parameter function parameters
+        Start, ProcessingParams, ProcessingParamFuncArgs, ProcessingParamFuncParams,
+        ConstArrayValue, FpOperands, QuantBody,
+        LetBindings, LetBindingValue, LetBody,
+        AnnotationBody, Annotations, AnnotationPatterns, AnnotationValue,
+        IntervalCoefficients, IntervalBounds,
+        AlgebraicPolynomial, AlgebraicLower, AlgebraicUpper,
+        MatchScrutinee, MatchCases, MatchBody,
         Finish
     };
 
-    // special processing type
-    enum class SpecialType {
-        None,
-        Let,
-        Exists,
-        Forall,
-        ParamFunc,
-        BV,
-        Underscore
-    };
-
-    // Frame of the parser
     struct ExprFrame {
         FrameState state = FrameState::Start;
-        SpecialType special_type = SpecialType::None;
-        std::string headSymbol;                      // head symbol
-        std::string second_symbol;                   // f of "(_ f …)"
-        std::vector<std::shared_ptr<DAGNode>> func_args;  // function arguments
-        std::vector<std::shared_ptr<DAGNode>> oper_params;// operator parameters
-        int line = 0;                                // line number
-        std::shared_ptr<DAGNode> result;             // result
-
-        ExprFrame() {
-            // pre-allocate container space, reduce dynamic expansion overhead
-            // according to common expressions, most operators have 2-4 args and a lot of params
-            func_args.reserve(4);
-            oper_params.reserve(64);
-        }
+        std::string headSymbol;
+        std::string second_symbol;
+        std::string array_map_operator;
+        std::vector<std::shared_ptr<DAGNode>> func_args;
+        std::vector<std::shared_ptr<DAGNode>> oper_params;
+        std::shared_ptr<DAGNode> result;
+        std::shared_ptr<DAGNode> child;
+        std::shared_ptr<Sort> sort;
+        std::shared_ptr<Sort> result_sort;
+        std::vector<std::string> binding_names;
+        std::unordered_set<std::string> frame_names;
+        std::vector<std::pair<std::string, std::shared_ptr<DAGNode>>> saved_quant;
+        std::vector<std::shared_ptr<DAGNode>> annotations;
+        std::vector<std::shared_ptr<DAGNode>> let_lists;
+        // std::stack's deque keeps frame addresses stable. Consecutive let
+        // bodies append to one owner, avoiding quadratic list copying.
+        ExprFrame* let_chain_owner = nullptr;
+        int line = 0;
+        std::size_t binding_line = 0;
+        unsigned extra_closes = 0;
+        bool scope_pushed = false;
+        bool preserve_let = false;
+        bool angle_algebraic = false;
+        bool wrapped_interval = false;
+        bool snapshot = false;
+        LET_MODE saved_let_mode = LET_MODE::LM_NON_LET;
+        std::size_t saved_let_depth = 0;
+        std::size_t saved_quant_depth = 0;
+        bool saved_in_quant = false;
+        bool saved_allow_placeholder = false;
+        std::shared_ptr<Sort> saved_placeholder_sort;
     };
     
 	// expr ::= const | func | (<identifier> <expr>+)
@@ -88,11 +92,53 @@ namespace SOMTParser{
         std::stack<ExprFrame> st;
         st.push(ExprFrame());
 
+        const auto closeScope = [&](ExprFrame& frame) {
+            if (!frame.scope_pushed) return;
+            getSymbolManager()->popLetScope();
+            frame.scope_pushed = false;
+            for (auto it = frame.saved_quant.rbegin(); it != frame.saved_quant.rend(); ++it) {
+                if (it->second) getSymbolManager()->registerQuantVar(it->first, it->second);
+                else getSymbolManager()->popQuantScope({it->first});
+            }
+            frame.saved_quant.clear();
+        };
+        const auto restoreFrame = [&](ExprFrame& frame) {
+            closeScope(frame);
+            if (!frame.snapshot) return;
+            current_let_mode = frame.saved_let_mode;
+            let_nesting_depth = frame.saved_let_depth;
+            quant_nesting_depth = frame.saved_quant_depth;
+            in_quantifier_scope = frame.saved_in_quant;
+            allow_placeholder_vars = frame.saved_allow_placeholder;
+            placeholder_var_sort = frame.saved_placeholder_sort;
+        };
+        const auto openScope = [&](ExprFrame& frame) {
+            getSymbolManager()->pushLetScope();
+            frame.scope_pushed = true;
+        };
+        const auto bindQuant = [&](ExprFrame& frame, const std::string& name,
+                                   const std::shared_ptr<DAGNode>& node) {
+            frame.saved_quant.emplace_back(name, getSymbolManager()->getQuantVar(name));
+            getSymbolManager()->registerQuantVar(name, node);
+            getSymbolManager()->registerLet(name, node);
+        };
+
+        try {
         while(!st.empty()){
             ExprFrame &frame = st.top();
             switch(frame.state){
                 case FrameState::Start:{
                     TIME_BLOCK("parseExpr FrameState::Start");
+                    frame.snapshot = true;
+                    frame.saved_let_mode = current_let_mode;
+                    frame.saved_let_depth = let_nesting_depth;
+                    frame.saved_quant_depth = quant_nesting_depth;
+                    frame.saved_in_quant = in_quantifier_scope;
+                    frame.saved_allow_placeholder = allow_placeholder_vars;
+                    frame.saved_placeholder_sort = placeholder_var_sort;
+                    scanToNextSymbol();
+                    if (!*bufptr) err_unexp_eof();
+                    if (*bufptr == ')') err_sym_mis("expression", line_number);
                     // handle the simplest symbol or constant
                     if(*bufptr != '('){
                         size_t ln = line_number;
@@ -114,11 +160,29 @@ namespace SOMTParser{
                         std::string s = getSymbol();
                         if(s == "_"){
                             std::string idx = getSymbol();
+                            if (idx == "map") {
+                                // The map index is a function symbol, not an
+                                // expression. Parsing `and` as an operand used
+                                // to reject our own finite-set output.
+                                frame.array_map_operator = getSymbol();
+                                parseRpar();
+                                frame.state = FrameState::ProcessingParamFuncParams;
+                                break;
+                            }
                             if(idx == "is"){
                                 std::string ctor = getSymbol();
                                 parseRpar();
+                                auto declaration = getSymbolManager()->resolveFun(ctor);
+                                if (!declaration || !declaration->getSort()
+                                    || !declaration->getSort()->isDatatype()
+                                    || !declaration->getSort()->hasDtConstructor(declaration->getName())) {
+                                    err_unkwn_sym("is " + ctor, frame.line);
+                                    frame.result = mkErr(ERROR_TYPE::ERR_UNKWN_SYM);
+                                    frame.state = FrameState::Finish;
+                                    break;
+                                }
                                 frame.headSymbol = "_";
-                                frame.second_symbol = "is-" + ctor;
+                                frame.second_symbol = "is-" + declaration->getName();
                                 frame.state = FrameState::ProcessingParams;
                                 break;
                             }
@@ -135,7 +199,6 @@ namespace SOMTParser{
                                 frame.state = FrameState::ProcessingParams;
                                 break;
                             }
-                            frame.special_type = SpecialType::ParamFunc;
                             frame.second_symbol = idx;
                             frame.state = FrameState::ProcessingParamFuncArgs;
                             break;
@@ -144,32 +207,40 @@ namespace SOMTParser{
                             // Handle ((as const T) value) pattern
                             std::string second = getSymbol();
                             if(second == "const"){
-                                // Parse array sort
-                                std::shared_ptr<Sort> array_sort = parseSort();
+                                frame.sort = parseSort();
                                 parseRpar(); // close (as const T)
-                                
-                                // Parse value
-                                std::shared_ptr<DAGNode> value = parseExpr();
-                                
-                                // Create constant array
-                                frame.result = mkConstArray(array_sort, value);
-                                parseRpar(); // close outer parentheses
+                                frame.state = FrameState::ConstArrayValue;
+                                st.emplace();
+                                break;
+                            }
+                            else if(second == "set.empty" || second == "set.universe"){
+                                // (as set.empty (Set T)): the sort is not
+                                // derivable from anything else, which is why
+                                // SMT-LIB annotates it and why these two
+                                // constants live outside the parseOper section.
+                                std::shared_ptr<Sort> set_sort = parseSort();
+                                parseRpar(); // close (as set.empty (Set T))
+                                frame.result = (second == "set.empty")
+                                    ? mkSetEmpty(set_sort) : mkSetUniverse(set_sort);
                                 frame.state = FrameState::Finish;
                                 break;
                             }
                             else if(std::shared_ptr<DAGNode> dtf =
                                         getSymbolManager()->getFun(second)){
-                                // `(as nil (L Int))` -- ASCRIBING which instance
-                                // of a parametric datatype a constructor builds.
-                                // A constructor mentioning none of the
-                                // parameters has no arguments to infer them
-                                // from, so SMT-LIB makes the script say. Without
-                                // this a parametric datatype has declarations
-                                // and no way to build a value.
+                                // `(as nil (L Int))` -- ASCRIBING a datatype
+                                // constructor's instance. A constructor of a
+                                // parametric datatype that mentions none of the
+                                // parameters cannot have them inferred from its
+                                // arguments, because it has none, so SMT-LIB
+                                // makes the script say which instance it means.
+                                // Without this a parametric datatype has
+                                // declarations and no way to build a value.
                                 //
-                                // The ascribed sort becomes the term's, so `nil`
-                                // at `(L Int)` and at `(L Bool)` are different
-                                // terms rather than one shared node.
+                                // The ascribed sort is taken as the term's, so
+                                // `nil` at `(L Int)` and at `(L Bool)` are
+                                // different terms rather than one shared node.
+                                std::shared_ptr<Sort> want = parseSort();
+                                parseRpar(); // close (as C S)
                                 const std::vector<std::shared_ptr<DAGNode>> none;
                                 const NODE_KIND dtk =
                                     getDtFunctionKind(dtf->getSort(), second, none);
@@ -179,10 +250,8 @@ namespace SOMTParser{
                                     frame.state = FrameState::Finish;
                                     break;
                                 }
-                                std::shared_ptr<Sort> want = parseSort();
-                                parseRpar(); // close (as C S)
                                 frame.result = getNodeManager()->createNode(
-                                    want, dtk, second, none);
+                                    want, dtk, dtf->getName(), none);
                                 frame.state = FrameState::Finish;
                                 break;
                             }
@@ -194,58 +263,16 @@ namespace SOMTParser{
                             }
                         }
                         else if(s == "root-obj"){
-                            // (root-obj (+ (^ x 2) (- 3)) 1)
-                            // (root-obj <expr> <index>)
-                            // Enable placeholder variables for polynomial expressions
-                            bool old_allow_placeholder = allow_placeholder_vars;
-                            std::shared_ptr<Sort> old_placeholder_sort = placeholder_var_sort;
-                            allow_placeholder_vars = true;
-                            placeholder_var_sort = SortManager::REAL_SORT; // Default to Real sort for polynomials
-                            
-                            std::shared_ptr<DAGNode> expr = parseExpr();
-                            std::string index_str = getSymbol();
-                            parseRpar(); // close (root-obj ...)
-                            
-                            // Restore original settings
-                            allow_placeholder_vars = old_allow_placeholder;
-                            placeholder_var_sort = old_placeholder_sort;
-                            
-                            // Parse index as integer
-                            int index = std::stoi(index_str);
-                            
-                            // Create root-obj node
-                            frame.result = mkRootObj(expr, index);
-                            frame.state = FrameState::Finish;
+                            frame.headSymbol = s;
+                            frame.extra_closes = 1; // ((root-obj ...))
+                            frame.state = FrameState::ProcessingParams;
                             break;
                         }
                         else if(s == "root-of-with-interval"){
-                            // ((root-of-with-interval (coeffs 1 (- 2)) 1 2))
-                            // Parse (coeffs ...) as a whole
-                            parseLpar(); // for (coeffs ...)
-                            std::string coeffs_tag = getSymbol(); // read "coeffs"
-                            // We don't validate coeffs_tag, just skip it
-                            
-                            // Parse coefficients
-                            std::vector<std::shared_ptr<DAGNode>> coeffs_list;
-                            scanToNextSymbol(); // Skip whitespace before checking for ')'
-                            while(*bufptr != ')'){
-                                std::shared_ptr<DAGNode> coeff = parseExpr();
-                                coeffs_list.push_back(coeff);
-                                scanToNextSymbol(); // Skip whitespace before checking for ')' again
-                            }
-                            parseRpar(); // close (coeffs ...)
-                            
-                            // Parse lower bound
-                            std::shared_ptr<DAGNode> lower_bound = parseExpr();
-                            
-                            // Parse upper bound
-                            std::shared_ptr<DAGNode> upper_bound = parseExpr();
-                            
-                            parseRpar(); // close (root-of-with-interval ...)
-                            
-                            // Create root-of-with-interval node
-                            frame.result = mkRootOfWithInterval(coeffs_list, lower_bound, upper_bound);
-                            frame.state = FrameState::Finish;
+                            frame.extra_closes = 1;
+                            parseLpar();
+                            getSymbol(); // legacy coefficient-list tag
+                            frame.state = FrameState::IntervalCoefficients;
                             break;
                         }
                         else{
@@ -260,11 +287,10 @@ namespace SOMTParser{
                     std::string head = getSymbol();
                     frame.headSymbol = head;
 
-                    // `(as nil (L Int))` is a COMPLETE term, not an annotation
-                    // applied to arguments, so it arrives here rather than in
-                    // the `((as const T) value)` branch above: the two `as`
-                    // forms differ in whether the annotation is the operator or
-                    // the whole term, and they are separate code paths.
+                    // `(as set.empty (Set Int))` is a complete term, so it
+                    // arrives here rather than in the `((as const T) value)`
+                    // branch above -- the two `as` forms differ in whether the
+                    // annotation is the operator or the whole term.
                     if(head == "as"){
                         const std::string what = getSymbol();
                         if (what == "sep.nil") {
@@ -276,6 +302,24 @@ namespace SOMTParser{
                             frame.state = FrameState::Finish;
                             break;
                         }
+                        if(what == "set.empty" || what == "set.universe"){
+                            std::shared_ptr<Sort> set_sort = parseSort();
+                            parseRpar();
+                            frame.result = (what == "set.empty")
+                                ? mkSetEmpty(set_sort) : mkSetUniverse(set_sort);
+                            frame.state = FrameState::Finish;
+                            break;
+                        }
+                        // `(as nil (L Int))` -- ASCRIBING which instance of a
+                        // parametric datatype a constructor builds. A
+                        // constructor that mentions none of the parameters has
+                        // no arguments to infer them from, so SMT-LIB makes the
+                        // script say; without this a parametric datatype has
+                        // declarations and no way to build a value at all.
+                        //
+                        // The ascribed sort becomes the term's, so `nil` at
+                        // `(L Int)` and at `(L Bool)` are different terms rather
+                        // than one shared node.
                         if(std::shared_ptr<DAGNode> dtf = getSymbolManager()->getFun(what)){
                             const std::vector<std::shared_ptr<DAGNode>> none;
                             const NODE_KIND dtk =
@@ -284,7 +328,7 @@ namespace SOMTParser{
                                 std::shared_ptr<Sort> want = parseSort();
                                 parseRpar();
                                 frame.result = getNodeManager()->createNode(
-                                    want, dtk, what, none);
+                                    want, dtk, dtf->getName(), none);
                                 frame.state = FrameState::Finish;
                                 break;
                             }
@@ -294,18 +338,23 @@ namespace SOMTParser{
                         frame.state = FrameState::Finish;
                         break;
                     }
-
                     if(head == "exists" || head == "forall"){
                         in_quantifier_scope = true;
-                        quant_nesting_depth++;
-                        auto res = parseQuant(head);
-                        parseRpar();
-                        frame.result = res;
-                        frame.state = FrameState::Finish;
-                        quant_nesting_depth--;
-                        if(quant_nesting_depth == 0){
-                            in_quantifier_scope = false;
+                        ++quant_nesting_depth;
+                        openScope(frame);
+                        parseLpar();
+                        while (*bufptr != ')') {
+                            parseLpar();
+                            const auto name = getSymbol();
+                            const auto sort = parseSort();
+                            auto var = getNodeManager()->createNode(sort, NODE_KIND::NT_QUANT_VAR, name);
+                            bindQuant(frame, name, var);
+                            frame.oper_params.push_back(std::move(var));
+                            parseRpar();
                         }
+                        parseRpar();
+                        frame.state = FrameState::QuantBody;
+                        st.emplace();
                     }
                     else if(head == "_"){
                         std::string second = getSymbol();
@@ -355,75 +404,27 @@ namespace SOMTParser{
                         // Format: (_ real_algebraic_number polynomial lower_bound upper_bound)
                         // or: (_ real_algebraic_number <polynomial>, (lower_bound, upper_bound)>)
                         else if(second == "real_algebraic_number"){
-                            // Enable placeholder variables for polynomial expressions
-                            bool old_allow_placeholder = allow_placeholder_vars;
-                            std::shared_ptr<Sort> old_placeholder_sort = placeholder_var_sort;
                             allow_placeholder_vars = true;
                             placeholder_var_sort = SortManager::REAL_SORT;
-                            
-                            // Check if we have angle brackets (CVC5 format)
                             scanToNextSymbol();
-                            std::shared_ptr<DAGNode> polynomial;
-                            std::shared_ptr<DAGNode> lower_bound;
-                            std::shared_ptr<DAGNode> upper_bound;
-                            
-                            if(*bufptr == '<'){
-                                // CVC5 format: <polynomial>, (lower_bound, upper_bound)>
-                                bufptr++; // skip '<'
-                                scanToNextSymbol();
-                                
-                                // Parse polynomial (until we find ',')
-                                polynomial = parseExpr();
-                                
-                                // Skip comma and whitespace
-                                scanToNextSymbol();
-                                if(*bufptr == ','){
-                                    bufptr++;
-                                    scanToNextSymbol();
-                                }
-                                
-                                // Parse interval: (lower_bound, upper_bound)
-                                if(*bufptr == '('){
-                                    parseLpar();
-                                    lower_bound = parseExpr();
-                                    scanToNextSymbol();
-                                    if(*bufptr == ','){
-                                        bufptr++;
-                                        scanToNextSymbol();
-                                    }
-                                    upper_bound = parseExpr();
-                                    parseRpar();
-                                } else {
-                                    // Fallback: parse two separate expressions
-                                    lower_bound = parseExpr();
-                                    upper_bound = parseExpr();
-                                }
-                                
-                                // Skip '>'
-                                scanToNextSymbol();
-                                if(*bufptr == '>'){
-                                    bufptr++;
-                                }
-                            } else {
-                                // Simple format: polynomial lower_bound upper_bound
-                                polynomial = parseExpr();
-                                lower_bound = parseExpr();
-                                upper_bound = parseExpr();
-                            }
-                            
-                            // Restore original settings
-                            allow_placeholder_vars = old_allow_placeholder;
-                            placeholder_var_sort = old_placeholder_sort;
-                            
-                            // Create real-algebraic-number node
-                            frame.result = mkRealAlgebraicNumber(polynomial, lower_bound, upper_bound);
-                            parseRpar();
-                            frame.state = FrameState::Finish;
+                            frame.angle_algebraic = *bufptr == '<';
+                            if (frame.angle_algebraic) { ++bufptr; scanToNextSymbol(); }
+                            frame.state = FrameState::AlgebraicPolynomial;
+                            st.emplace();
                         }
                         else if(second == "is"){
                             std::string ctor = getSymbol();
                             parseRpar();
-                            frame.second_symbol = "is-" + ctor;
+                            auto declaration = getSymbolManager()->resolveFun(ctor);
+                            if (!declaration || !declaration->getSort()
+                                || !declaration->getSort()->isDatatype()
+                                || !declaration->getSort()->hasDtConstructor(declaration->getName())) {
+                                err_unkwn_sym("is " + ctor, frame.line);
+                                frame.result = mkErr(ERROR_TYPE::ERR_UNKWN_SYM);
+                                frame.state = FrameState::Finish;
+                                break;
+                            }
+                            frame.second_symbol = "is-" + declaration->getName();
                             frame.state = FrameState::ProcessingParams;
                         }
                         else{
@@ -431,172 +432,31 @@ namespace SOMTParser{
                             frame.state = FrameState::ProcessingParams;
                         }
                     }
-                    // Handle floating point bit representation: (fp sign exp mant)
                     else if(head == "fp"){
-                        // Parse (fp sign exp mant) where sign, exp, mant are bit vectors
-                        std::vector<std::shared_ptr<DAGNode>> fp_args;
-                        
-                        // Parse sign bit
-                        std::shared_ptr<DAGNode> sign = parseExpr();
-                        fp_args.push_back(sign);
-                        
-                        // Parse exponent
-                        std::shared_ptr<DAGNode> exp = parseExpr();
-                        fp_args.push_back(exp);
-                        
-                        // Parse mantissa
-                        std::shared_ptr<DAGNode> mant = parseExpr();
-                        fp_args.push_back(mant);
-                        
-                        // Create fp constant using the new mkFpConst function
-                        frame.result = mkFpConst(sign, exp, mant);
-                        parseRpar();
-                        frame.state = FrameState::Finish;
+                        frame.state = FrameState::FpOperands;
                     }
                     else if(head == "let"){
-                        if(let_nesting_depth == 0){
-                            current_let_mode = LET_MODE::LM_START_LET;
-                        }else if(current_let_mode == LET_MODE::LM_START_LET){
-                            current_let_mode = LET_MODE::LM_IN_LET;
-                        }
-                        let_nesting_depth++;
-
-                        std::shared_ptr<DAGNode> res;
-                        if(getOptions()->parsing_preserve_let){
-                            res = parsePreservingLet();
-                        }else{
-                            res = parseLet();
-                        }
-
-                        let_nesting_depth--;
-                        if(let_nesting_depth == 0){
-                            current_let_mode = LET_MODE::LM_NON_LET;
-                        }
-
-                        if(res->isErr()) err_all(res, "let", frame.line);
-                        parseRpar();
-                        frame.result = res;
-                        frame.state = FrameState::Finish;
-                    }else if (head == "!"){
-                        // (! <term> <attr>+), <attr> ::= :keyword [value].
-                        // Only :named is recorded (unsat cores); every other
-                        // annotation (:pattern (...), :weight n, :qid s,
-                        // :lblpos l, ...) is a hint and is skipped — including
-                        // parenthesised pattern lists.  Previously only :named
-                        // was handled, so quantified benchmarks carrying
-                        // :pattern (almost all of UFNIA/UFDT/...) failed to parse.
-                        // With preserve_annotations enabled the understood
-                        // annotations are kept as nodes so printing round-trips
-                        // triggers instead of silently dropping them (ported
-                        // from the SMTStabilizer fork); otherwise the original
-                        // skip-everything behaviour is retained.
-                        const bool keep_annots = getOptions()->getPreserveAnnotations();
-                        std::vector<std::shared_ptr<DAGNode>> annotations;
-                        std::shared_ptr<DAGNode> formula = parseExpr();
-                        scanToNextSymbol();
-                        while(*bufptr && *bufptr != ')'){
-                            if(*bufptr == ':'){
-                                std::string kw;
-                                while(*bufptr && !isspace((unsigned char)*bufptr)
-                                      && *bufptr != '(' && *bufptr != ')'){
-                                    kw += *bufptr++;
-                                }
-                                scanToNextSymbol();
-                                if(kw == ":named" && *bufptr
-                                   && *bufptr != ':' && *bufptr != ')'){
-                                    // `formula` is a whole assertion only when this
-                                    // (! ...) sits directly under (assert ...). A name
-                                    // on a nested subterm is recorded here and found by
-                                    // getNamedAssertions(), but dumpSMT2 annotates whole
-                                    // assertions and so drops it -- not supported for now.
-                                    size_t name_ln = line_number;
-                                    std::string name = getSymbol();
-                                    warn_named_displaced(context_.nameAssertion(name, formula),
-                                                         name, name_ln);
-                                    scanToNextSymbol();
-                                }else if(keep_annots && kw == ":pattern" && *bufptr == '('){
-                                    parseLpar();
-                                    std::vector<std::shared_ptr<DAGNode>> patterns;
-                                    scanToNextSymbol();
-                                    while(*bufptr && *bufptr != ')'){
-                                        patterns.emplace_back(parseExpr());
-                                        scanToNextSymbol();
-                                    }
-                                    parseRpar();
-                                    annotations.emplace_back(mkPattern(patterns));
-                                    scanToNextSymbol();
-                                }else if(keep_annots && kw == ":no-pattern"
-                                         && *bufptr && *bufptr != ':' && *bufptr != ')'){
-                                    annotations.emplace_back(mkNoPattern(parseExpr()));
-                                    scanToNextSymbol();
-                                }else if(keep_annots && kw == ":weight"
-                                         && *bufptr && *bufptr != ':' && *bufptr != ')'){
-                                    annotations.emplace_back(mkWeight(parseExpr()));
-                                    scanToNextSymbol();
-                                }else if(keep_annots && kw == ":qid"
-                                         && *bufptr && *bufptr != ':' && *bufptr != ')'
-                                         && *bufptr != '('){
-                                    annotations.emplace_back(mkQid(getSymbol()));
-                                    scanToNextSymbol();
-                                }else if(*bufptr == '('){
-                                    // skip a balanced parenthesised value
-                                    int depth = 0;
-                                    do{
-                                        if(*bufptr == '(') depth++;
-                                        else if(*bufptr == ')') depth--;
-                                        bufptr++;
-                                    }while(*bufptr && depth > 0);
-                                    scanToNextSymbol();
-                                }else if(*bufptr && *bufptr != ':' && *bufptr != ')'){
-                                    getSymbol();  // single-token value
-                                    scanToNextSymbol();
-                                }
-                            }else{
-                                getSymbol();  // unexpected token; make progress
-                                scanToNextSymbol();
-                            }
-                        }
-                        if(!annotations.empty()){
-                            formula = mkAttribute(formula, annotations);
-                        }
-                        frame.result = formula;
-                        parseRpar();
-                        frame.state = FrameState::Finish;
+                        current_let_mode = let_nesting_depth == 0 ? LET_MODE::LM_START_LET
+                                                                 : LET_MODE::LM_IN_LET;
+                        ++let_nesting_depth;
+                        frame.preserve_let = getOptions()->parsing_preserve_let;
+                        if (!frame.let_chain_owner) frame.let_chain_owner = &frame;
+                        openScope(frame);
+                        parseLpar();
+                        frame.state = FrameState::LetBindings;
+                    }
+                    else if(head == "!"){
+                        frame.state = FrameState::AnnotationBody;
+                        st.emplace();
                     }
                     else if(head == "root-of-with-interval"){
-                        // (root-of-with-interval (coeffs 1 (- 2)) 1 2)
-                        // Parse (coeffs ...) as a whole
-                        parseLpar(); // for (coeffs ...)
-                        std::string coeffs_tag = getSymbol(); // read "coeffs"
-                        // We don't validate coeffs_tag, just skip it
-                        
-                        // Parse coefficients
-                        std::vector<std::shared_ptr<DAGNode>> coeffs_list;
-                        scanToNextSymbol(); // Skip whitespace before checking for ')'
-                        while(*bufptr != ')'){
-                            std::shared_ptr<DAGNode> coeff = parseExpr();
-                            coeffs_list.push_back(coeff);
-                            scanToNextSymbol(); // Skip whitespace before checking for ')' again
-                        }
-                        parseRpar(); // close (coeffs ...)
-                        
-                        // Parse lower bound
-                        std::shared_ptr<DAGNode> lower_bound = parseExpr();
-                        
-                        // Parse upper bound
-                        std::shared_ptr<DAGNode> upper_bound = parseExpr();
-                        
-                        parseRpar(); // close (root-of-with-interval ...)
-                        
-                        // Create root-of-with-interval node
-                        frame.result = mkRootOfWithInterval(coeffs_list, lower_bound, upper_bound);
-                        frame.state = FrameState::Finish;
+                        parseLpar();
+                        getSymbol(); // legacy coefficient-list tag
+                        frame.state = FrameState::IntervalCoefficients;
                     }
                     else if(head == "match"){
-                        auto res = parseMatch();
-                        parseRpar();
-                        frame.result = res;
-                        frame.state = FrameState::Finish;
+                        frame.state = FrameState::MatchScrutinee;
+                        st.emplace();
                     }
 
                     else{
@@ -605,12 +465,260 @@ namespace SOMTParser{
                     break;
                 }
 
+                case FrameState::ConstArrayValue: {
+                    frame.result = mkConstArray(frame.sort, frame.child);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::FpOperands: {
+                    if (frame.oper_params.size() < 3) { st.emplace(); break; }
+                    frame.result = mkFpConst(frame.oper_params[0], frame.oper_params[1], frame.oper_params[2]);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::QuantBody: {
+                    frame.oper_params.insert(frame.oper_params.begin(), std::move(frame.child));
+                    frame.result = frame.headSymbol == "forall" ? mkForall(frame.oper_params)
+                                                                 : mkExists(frame.oper_params);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::LetBindings: {
+                    scanToNextSymbol();
+                    if (*bufptr == ')') {
+                        if (frame.oper_params.empty()) err_sym_mis("let requires at least one binding", line_number);
+                        // Parallel let: all RHSs were parsed in the outer
+                        // environment; publish the group only for its body.
+                        for (std::size_t i = 0; i < frame.oper_params.size(); ++i)
+                            getSymbolManager()->registerLet(frame.binding_names[i], frame.oper_params[i]);
+                        if (frame.preserve_let)
+                            frame.let_chain_owner->let_lists.push_back(mkLetBindVarList(frame.oper_params));
+                        parseRpar();
+                        frame.state = FrameState::LetBody;
+                        ExprFrame* owner = frame.preserve_let ? frame.let_chain_owner : nullptr;
+                        st.emplace();
+                        st.top().let_chain_owner = owner;
+                        break;
+                    }
+                    parseLpar();
+                    frame.binding_line = line_number;
+                    auto name = getSymbol();
+                    if (!frame.frame_names.insert(name).second)
+                        err_sym_mis("Duplicate variable binding: " + name, frame.binding_line);
+                    frame.binding_names.push_back(std::move(name));
+                    frame.state = FrameState::LetBindingValue;
+                    st.emplace();
+                    break;
+                }
+                case FrameState::LetBindingValue: {
+                    const auto& name = frame.binding_names.back();
+                    if (frame.child->isErr()) err_all(frame.child, name, frame.binding_line);
+                    frame.oper_params.push_back(frame.preserve_let ? mkLetBindVar(name, frame.child) : frame.child);
+                    frame.child.reset();
+                    parseRpar();
+                    frame.state = FrameState::LetBindings;
+                    break;
+                }
+                case FrameState::LetBody: {
+                    frame.result = frame.preserve_let && frame.let_chain_owner == &frame
+                        ? mkLetChain(frame.let_lists, frame.child) : frame.child;
+                    if (frame.result->isErr()) err_all(frame.result, "let", frame.line);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::AnnotationBody: {
+                    frame.result = std::move(frame.child);
+                    frame.state = FrameState::Annotations;
+                    break;
+                }
+                case FrameState::Annotations: {
+                    scanToNextSymbol();
+                    if (!*bufptr) err_unexp_eof();
+                    if (*bufptr == ')') {
+                        if (!frame.annotations.empty()) frame.result = mkAttribute(frame.result, frame.annotations);
+                        parseRpar();
+                        frame.state = FrameState::Finish;
+                        break;
+                    }
+                    if (*bufptr != ':') { getSymbol(); break; }
+                    std::string keyword;
+                    while (*bufptr && !isspace(static_cast<unsigned char>(*bufptr))
+                           && *bufptr != '(' && *bufptr != ')') keyword += *bufptr++;
+                    scanToNextSymbol();
+                    const bool value = *bufptr && *bufptr != ':' && *bufptr != ')';
+                    const bool keep = getOptions()->getPreserveAnnotations();
+                    if (keyword == ":named" && value) {
+                        const auto name_line = line_number;
+                        const auto name = getSymbol();
+                        warn_named_displaced(context_.nameAssertion(name, frame.result), name, name_line);
+                    } else if (keep && keyword == ":pattern" && *bufptr == '(') {
+                        parseLpar();
+                        frame.oper_params.clear();
+                        frame.state = FrameState::AnnotationPatterns;
+                    } else if (keep && value && (keyword == ":no-pattern" || keyword == ":weight")) {
+                        frame.second_symbol = keyword;
+                        frame.state = FrameState::AnnotationValue;
+                        st.emplace();
+                    } else if (keep && value && keyword == ":qid" && *bufptr != '(') {
+                        frame.annotations.push_back(mkQid(getSymbol()));
+                    } else if (*bufptr == '(') {
+                        // Retain the existing skip policy for unknown hints.
+                        // Consume tokens, so parentheses in quoted symbols or
+                        // strings do not change the balanced-list depth.
+                        std::size_t depth = 0;
+                        do {
+                            scanToNextSymbol();
+                            if (!*bufptr) err_unexp_eof();
+                            if (*bufptr == '(') { parseLpar(); ++depth; }
+                            else if (*bufptr == ')') { parseRpar(); --depth; }
+                            else getSymbol();
+                        } while (depth);
+                    } else if (value) {
+                        getSymbol();
+                    }
+                    break;
+                }
+                case FrameState::AnnotationPatterns: {
+                    scanToNextSymbol();
+                    if (*bufptr == ')') {
+                        parseRpar();
+                        frame.annotations.push_back(mkPattern(frame.oper_params));
+                        frame.oper_params.clear();
+                        frame.state = FrameState::Annotations;
+                    } else st.emplace();
+                    break;
+                }
+                case FrameState::AnnotationValue: {
+                    frame.annotations.push_back(frame.second_symbol == ":weight"
+                        ? mkWeight(frame.child) : mkNoPattern(frame.child));
+                    frame.child.reset();
+                    frame.state = FrameState::Annotations;
+                    break;
+                }
+                case FrameState::IntervalCoefficients: {
+                    scanToNextSymbol();
+                    if (*bufptr == ')') {
+                        parseRpar();
+                        frame.state = FrameState::IntervalBounds;
+                    } else st.emplace();
+                    break;
+                }
+                case FrameState::IntervalBounds: {
+                    if (frame.oper_params.size() < 2) { st.emplace(); break; }
+                    frame.result = mkRootOfWithInterval(frame.func_args, frame.oper_params[0], frame.oper_params[1]);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::AlgebraicPolynomial: {
+                    frame.func_args.push_back(std::move(frame.child));
+                    if (frame.angle_algebraic) {
+                        scanToNextSymbol();
+                        if (*bufptr == ',') { ++bufptr; scanToNextSymbol(); }
+                        frame.wrapped_interval = *bufptr == '(';
+                        if (frame.wrapped_interval) parseLpar();
+                    }
+                    frame.state = FrameState::AlgebraicLower;
+                    st.emplace();
+                    break;
+                }
+                case FrameState::AlgebraicLower: {
+                    frame.oper_params.push_back(std::move(frame.child));
+                    if (frame.angle_algebraic) {
+                        scanToNextSymbol();
+                        if (*bufptr == ',') { ++bufptr; scanToNextSymbol(); }
+                    }
+                    frame.state = FrameState::AlgebraicUpper;
+                    st.emplace();
+                    break;
+                }
+                case FrameState::AlgebraicUpper: {
+                    if (frame.wrapped_interval) parseRpar();
+                    if (frame.angle_algebraic) {
+                        scanToNextSymbol();
+                        if (*bufptr == '>') { ++bufptr; scanToNextSymbol(); }
+                    }
+                    frame.result = mkRealAlgebraicNumber(frame.func_args[0], frame.oper_params[0], frame.child);
+                    parseRpar();
+                    frame.state = FrameState::Finish;
+                    break;
+                }
+                case FrameState::MatchScrutinee: {
+                    frame.sort = frame.child->getSort();
+                    frame.oper_params.push_back(std::move(frame.child));
+                    parseLpar();
+                    if (*bufptr == ')') err_sym_mis("match case", line_number);
+                    frame.state = FrameState::MatchCases;
+                    break;
+                }
+                case FrameState::MatchCases: {
+                    scanToNextSymbol();
+                    if (*bufptr == ')') {
+                        parseRpar(); // case list
+                        parseRpar(); // match
+                        frame.result = getNodeManager()->createNode(frame.result_sort, NODE_KIND::NT_DT_MATCH,
+                                                                    "match", frame.oper_params);
+                        frame.state = FrameState::Finish;
+                        break;
+                    }
+                    parseLpar();
+                    openScope(frame);
+                    std::shared_ptr<DAGNode> pattern;
+                    if (*bufptr == '(') {
+                        parseLpar();
+                        auto name = getSymbol();
+                        if (auto declaration = getSymbolManager()->resolveFun(name)) name = declaration->getName();
+                        std::vector<std::shared_ptr<DAGNode>> variables;
+                        if (frame.sort && frame.sort->isDatatype() && frame.sort->hasDtConstructor(name)) {
+                            const auto* constructor = frame.sort->getDtConstructorByName(name);
+                            if (constructor) for (const auto& selector : constructor->selectors) {
+                                const auto variable_name = getSymbol();
+                                auto variable = getNodeManager()->createNode(selector.sort, NODE_KIND::NT_QUANT_VAR,
+                                                                            variable_name);
+                                bindQuant(frame, variable_name, variable);
+                                variables.push_back(std::move(variable));
+                            }
+                        }
+                        parseRpar();
+                        pattern = getNodeManager()->createNode(frame.sort, NODE_KIND::NT_DT_CONSTRUCTOR, name, variables);
+                    } else {
+                        const auto name = getSymbol();
+                        const auto declaration = getSymbolManager()->resolveFun(name);
+                        const auto& member = declaration ? declaration->getName() : name;
+                        if (frame.sort && frame.sort->isDatatype() && frame.sort->hasDtConstructor(member)) {
+                            pattern = getNodeManager()->createNode(frame.sort, NODE_KIND::NT_DT_CONSTRUCTOR, member, {});
+                        } else {
+                            pattern = getNodeManager()->createNode(frame.sort, NODE_KIND::NT_QUANT_VAR, name);
+                            bindQuant(frame, name, pattern);
+                        }
+                    }
+                    frame.oper_params.push_back(std::move(pattern));
+                    in_quantifier_scope = true;
+                    frame.state = FrameState::MatchBody;
+                    st.emplace();
+                    break;
+                }
+                case FrameState::MatchBody: {
+                    const auto sort = frame.child ? frame.child->getSort() : nullptr;
+                    if (!sort || (frame.result_sort && !frame.result_sort->isEqTo(sort)))
+                        err_type_mis("match cases must have the same result sort", line_number);
+                    if (!frame.result_sort) frame.result_sort = sort;
+                    frame.oper_params.push_back(std::move(frame.child));
+                    parseRpar();
+                    closeScope(frame);
+                    in_quantifier_scope = frame.saved_in_quant;
+                    frame.state = FrameState::MatchCases;
+                    break;
+                }
+
                 case FrameState::ProcessingParams:{
                     TIME_BLOCK("parseExpr FrameState::ProcessingParams");
                     
                     // Special handling for root-obj and root-of-with-interval: enable placeholder variables
-                    bool old_allow_placeholder = allow_placeholder_vars;
-                    std::shared_ptr<Sort> old_placeholder_sort = placeholder_var_sort;
                     const std::string& opName = (frame.headSymbol == "_") ? frame.second_symbol : frame.headSymbol;
                     if(opName == "root-obj" || opName == "root-of-with-interval" || opName == "real_algebraic_number"){
                         allow_placeholder_vars = true;
@@ -633,11 +741,6 @@ namespace SOMTParser{
                         frame.result = res;
                         frame.state = FrameState::Finish;
                         
-                        // Restore placeholder settings
-                        if(opName == "root-obj" || opName == "root-of-with-interval" || opName == "real_algebraic_number"){
-                            allow_placeholder_vars = old_allow_placeholder;
-                            placeholder_var_sort = old_placeholder_sort;
-                        }
                         break;
                     }
                     st.push(ExprFrame());
@@ -668,7 +771,9 @@ namespace SOMTParser{
                         // inline the most common operators
                         const std::string& opName = frame.second_symbol;
                         
-                        res = parseOper(opName, frame.func_args, frame.oper_params, true);
+                        res = frame.array_map_operator.empty()
+                            ? parseOper(opName, frame.func_args, frame.oper_params, true)
+                            : mkArrayMap(frame.array_map_operator, frame.oper_params);
                         
                         if(res->isErr()) err_all(res, frame.second_symbol, frame.line);
                         frame.result = res;
@@ -681,25 +786,36 @@ namespace SOMTParser{
 
                 case FrameState::Finish:{
                     TIME_BLOCK("parseExpr FrameState::Finish");
+                    while (frame.extra_closes > 0) { parseRpar(); --frame.extra_closes; }
                     auto res = frame.result;
+                    restoreFrame(frame);
                     st.pop();
                     if(st.empty()) return res;
                     ExprFrame &parent = st.top();
-                    if(parent.state == FrameState::ProcessingParams){
-                        parent.oper_params.emplace_back(res);
-                    }else if(parent.state == FrameState::ProcessingParamFuncArgs){
-                        parent.func_args.emplace_back(res);
-                    }else if(parent.state == FrameState::ProcessingParamFuncParams){
-                        parent.oper_params.emplace_back(res);
+                    if(parent.state == FrameState::ProcessingParamFuncArgs
+                       || parent.state == FrameState::IntervalCoefficients){
+                        parent.func_args.emplace_back(std::move(res));
+                    }else if(parent.state == FrameState::ProcessingParams
+                             || parent.state == FrameState::ProcessingParamFuncParams
+                             || parent.state == FrameState::FpOperands
+                             || parent.state == FrameState::IntervalBounds
+                             || parent.state == FrameState::AnnotationPatterns){
+                        parent.oper_params.emplace_back(std::move(res));
+                    }else{
+                        parent.child = std::move(res);
                     }
                     break;
                 }
                 default:{
                     TIME_BLOCK("parseExpr Default");
-                    st.pop();
+                    condAssert(false, "Invalid expression continuation");
                     break;
                 }
             }
+        }
+        } catch (...) {
+            while (!st.empty()) { restoreFrame(st.top()); st.pop(); }
+            throw;
         }
 
         return mkErr(ERROR_TYPE::ERR_UNKWN_SYM); // cannot reach here
@@ -729,6 +845,14 @@ namespace SOMTParser{
 			std::string parsed = ConversionUtils::parseScientificNotation(s);
 			return mkConstReal(parsed);
 		}
+		// A String literal is a distinct token class from a symbol, even when
+		// its spelling also forms a valid quoted identifier (for example, the
+		// literal "g" and the identifier |"g"|). Recognize it before symbol
+		// resolution, whose quoted/unquoted fallback intentionally equates
+		// alternate spellings of the same identifier.
+		else if(TypeChecker::isString(s)){
+			return mkConstStr(s);
+		}
 		{
 			ResolveScope scope;
 			scope.check_let = (current_let_mode != LET_MODE::LM_NON_LET) || in_quantifier_scope;
@@ -741,8 +865,8 @@ namespace SOMTParser{
 			if (func && func->getFuncParamsSize() == 0) {
 				// Check if this is a nullary DT constructor
 				auto ret_sort = func->getSort();
-				if(ret_sort && ret_sort->isDatatype() && ret_sort->hasDtConstructor(s)) {
-					return getNodeManager()->createNode(ret_sort, NODE_KIND::NT_DT_CONSTRUCTOR, s, {});
+				if(ret_sort && ret_sort->isDatatype() && ret_sort->hasDtConstructor(func->getName())) {
+					return getNodeManager()->createNode(ret_sort, NODE_KIND::NT_DT_CONSTRUCTOR, func->getName(), {});
 				}
 				// Nullary functions go through applyFun uniformly so that
 				// expand_functions / expand_recursive_functions are handled
@@ -800,9 +924,6 @@ namespace SOMTParser{
 		}
 		else if(TypeChecker::isFP(s)){
 			return mkConstFP(s);
-		}
-		else if(TypeChecker::isString(s)){
-			return mkConstStr(s);
 		}
 		// no parameters
 		// tuple.unit is the nullary tuple constant, so it appears as a bare
@@ -883,7 +1004,7 @@ namespace SOMTParser{
 				// path intercepts the application before applyFun, so it needs
 				// the same substitution rather than func->getSort() raw.
 				return getNodeManager()->createNode(
-					dtAppliedSort(func, oper_params), dtk, s, oper_params);
+					dtAppliedSort(func, oper_params), dtk, func->getName(), oper_params);
 			}
 		}
 		// Non-indexed (op ...): user define-fun / define-fun-rec / pending declare-fun (body) may shadow only allow_builtin_shadow names.
@@ -1196,7 +1317,9 @@ namespace SOMTParser{
 				return mkBvConcat(oper_params);
             case NODE_KIND::NT_BV_TO_INT:
                 condAssert(oper_params.size() == 1, "Invalid number of parameters for bv2int");
-                return mkBvToInt(oper_params[0]);
+                // Z3/cvc5 read the legacy source spelling as unsigned. The
+                // C++ mkBvToInt/HIR BV_TO_INT API remains explicitly signed.
+                return mkBvToNat(oper_params[0]);
             case NODE_KIND::NT_BV_TO_NAT:
                 condAssert(oper_params.size() == 1, "Invalid number of parameters for bv2nat");
                 return mkBvToNat(oper_params[0]);
@@ -1349,6 +1472,36 @@ namespace SOMTParser{
             case NODE_KIND::NT_FP_TO_REAL:
                 condAssert(oper_params.size() == 1, "Invalid number of parameters for fp.to_real");
                 return mkFpToReal(oper_params[0]);
+            // fp.to_ieee_bv was in oper_key_map and in the printer but had no
+            // case here, so a term this library built and dumped could not be
+            // read back by this library: "Unknown or unexpected symbol
+            // fp.to_ieee_bv". The dump round-trip property never saw it because
+            // no instance in the corpus uses the operator.
+            case NODE_KIND::NT_FP_TO_IEEE_BV:
+                condAssert(oper_params.size() == 1, "Invalid number of parameters for fp.to_ieee_bv");
+                return mkFpToIeeeBv(oper_params[0]);
+            // ---- Finite sets ---------------------------------------------
+            case NODE_KIND::NT_SET_SINGLETON:
+                condAssert(oper_params.size() == 1, "Invalid number of parameters for set.singleton");
+                return mkSetSingleton(oper_params[0]);
+            case NODE_KIND::NT_SET_UNION:  return mkSetUnion(oper_params);
+            case NODE_KIND::NT_SET_INTER:  return mkSetInter(oper_params);
+            case NODE_KIND::NT_SET_INSERT: return mkSetInsert(oper_params);
+            case NODE_KIND::NT_SET_MINUS:
+                condAssert(oper_params.size() == 2, "Invalid number of parameters for set.minus");
+                return mkSetMinus(oper_params[0], oper_params[1]);
+            case NODE_KIND::NT_SET_MEMBER:
+                condAssert(oper_params.size() == 2, "Invalid number of parameters for set.member");
+                return mkSetMember(oper_params[0], oper_params[1]);
+            case NODE_KIND::NT_SET_SUBSET:
+                condAssert(oper_params.size() == 2, "Invalid number of parameters for set.subset");
+                return mkSetSubset(oper_params[0], oper_params[1]);
+            case NODE_KIND::NT_SET_CARD:
+                condAssert(oper_params.size() == 1, "Invalid number of parameters for set.card");
+                return mkSetCard(oper_params[0]);
+            case NODE_KIND::NT_SET_COMPLEMENT:
+                condAssert(oper_params.size() == 1, "Invalid number of parameters for set.complement");
+                return mkSetComplement(oper_params[0]);
             case NODE_KIND::NT_FP_TO_FP:
                 // Handle different to_fp syntax:
                 // 1. ((_ to_fp eb sb) RoundingMode Real) -> func_args: [eb, sb], oper_params: [RoundingMode, Real]
@@ -1510,18 +1663,23 @@ namespace SOMTParser{
             case NODE_KIND::NT_STR_NUM_SPLITS_RE:
                 condAssert(oper_params.size() == 2, "Invalid number of parameters for str.num_splits_re");
                 return mkStrNumSplitsRe(oper_params[0], oper_params[1]);
+            // str.< and str.<= are :chainable in the SMT-LIB strings theory
+            // (`(str.<= a b c)` is `(and (str.<= a b) (str.<= b c))`); str.>
+            // and str.>= are not in the standard but are accepted as leniency
+            // with the same shape. The n-ary builders do the expansion, like
+            // mkLe(vector) and its siblings did for the numeric orderings.
             case NODE_KIND::NT_STR_LT:
-                condAssert(oper_params.size() == 2, "Invalid number of parameters for str.<");
-                return mkStrLt(oper_params[0], oper_params[1]);
+                condAssert(oper_params.size() >= 2, "Not enough parameters for str.<");
+                return mkStrLt(oper_params);
             case NODE_KIND::NT_STR_LE:
-                condAssert(oper_params.size() == 2, "Invalid number of parameters for str.<=");
-                return mkStrLe(oper_params[0], oper_params[1]);
+                condAssert(oper_params.size() >= 2, "Not enough parameters for str.<=");
+                return mkStrLe(oper_params);
             case NODE_KIND::NT_STR_GT:
-                condAssert(oper_params.size() == 2, "Invalid number of parameters for str.>");
-                return mkStrGt(oper_params[0], oper_params[1]);
+                condAssert(oper_params.size() >= 2, "Not enough parameters for str.>");
+                return mkStrGt(oper_params);
             case NODE_KIND::NT_STR_GE:
-                condAssert(oper_params.size() == 2, "Invalid number of parameters for str.>=");
-                return mkStrGe(oper_params[0], oper_params[1]);
+                condAssert(oper_params.size() >= 2, "Not enough parameters for str.>=");
+                return mkStrGe(oper_params);
             case NODE_KIND::NT_STR_IN_REG:
                 condAssert(oper_params.size() == 2, "Invalid number of parameters for str.in_re");
                 return mkStrInReg(oper_params[0], oper_params[1]);
@@ -1607,6 +1765,13 @@ namespace SOMTParser{
             return applyFun(func, oper_params);
         }
 
+        // cvc5's nullable.some is unary. We do not implement its semantics,
+        // but a known arity violation is an input error, not just a coverage
+        // gap. A well-shaped application still reaches UNKNOWN_SYMBOL below;
+        // a user-defined function with this spelling was resolved above.
+        if (s == "nullable.some" && oper_params.size() != 1) {
+            err_param_mis(s, line_number);
+        }
         err_unkwn_sym(s, line_number);
         return mkErr(ERROR_TYPE::ERR_UNKWN_SYM);
 	}

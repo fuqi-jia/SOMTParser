@@ -1,0 +1,7 @@
+INFO { TITLE: "finite output-dependent invariant assumption" SEMANTICS: Finite,Mealy TARGET: Mealy }
+MAIN {
+  INPUTS { }
+  OUTPUTS { o; }
+  ASSUMPTIONS { G o; }
+  GUARANTEES { G o; }
+}

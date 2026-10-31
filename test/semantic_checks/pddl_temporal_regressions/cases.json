@@ -1,0 +1,363 @@
+[
+  {
+    "id": "empty-duration-00",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-01",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "5/3",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-02",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "3",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-03",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1/2",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-04",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "0",
+        "end": "1",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-05",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "-1",
+        "end": "1",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-06",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1000000000000000000001",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "empty-duration-07",
+    "kind": "empty-duration",
+    "domain": "fixtures/empty.domain.pddl",
+    "problem": "fixtures/empty.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1/7",
+        "end": "8/7",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "duplicate-same-time",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/simple.domain.pddl",
+    "problem": "fixtures/simple.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "same-action-different-time",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/simple.domain.pddl",
+    "problem": "fixtures/simple.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      },
+      {
+        "start": "2",
+        "end": "2",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "triple-same-time",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/simple.domain.pddl",
+    "problem": "fixtures/simple.problem.pddl",
+    "horizon": 3,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "one-entry-padding",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/simple.domain.pddl",
+    "problem": "fixtures/simple.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "different-ground-arguments",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/grounded.domain.pddl",
+    "problem": "fixtures/grounded.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": [
+          "a"
+        ]
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 1,
+        "arguments": [
+          "b"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "same-ground-arguments",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/grounded.domain.pddl",
+    "problem": "fixtures/grounded.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": [
+          "a"
+        ]
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": [
+          "a"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "different-action-names",
+    "kind": "simple-happening-set",
+    "domain": "fixtures/different.domain.pddl",
+    "problem": "fixtures/different.problem.pddl",
+    "horizon": 2,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "pulse",
+        "action_index": 0,
+        "arguments": []
+      },
+      {
+        "start": "1",
+        "end": "1",
+        "action": "boost",
+        "action_index": 1,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "zero-duration-open-invariant",
+    "kind": "zero-duration",
+    "domain": "fixtures/zero.domain.pddl",
+    "problem": "fixtures/zero.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "zero-duration-positive-duration-rejected",
+    "kind": "zero-duration",
+    "domain": "fixtures/zero.domain.pddl",
+    "problem": "fixtures/zero.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "2",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "zero-duration-start-end-conflict",
+    "kind": "zero-duration-conflict",
+    "domain": "fixtures/zero-conflict.domain.pddl",
+    "problem": "fixtures/zero-conflict.problem.pddl",
+    "horizon": 1,
+    "schedule": [
+      {
+        "start": "1",
+        "end": "1",
+        "action": "finish",
+        "action_index": 0,
+        "arguments": []
+      }
+    ]
+  },
+  {
+    "id": "stable-goal-before-last-event",
+    "kind": "TIL-stable-goal",
+    "domain": "fixtures/til.domain.pddl",
+    "problem": "fixtures/til.problem.pddl",
+    "horizon": 0,
+    "schedule": []
+  },
+  {
+    "id": "stable-goal-initial",
+    "kind": "TIL-stable-goal",
+    "domain": "fixtures/til-initial.domain.pddl",
+    "problem": "fixtures/til-initial.problem.pddl",
+    "horizon": 0,
+    "schedule": []
+  }
+]

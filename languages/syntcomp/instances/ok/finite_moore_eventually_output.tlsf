@@ -1,0 +1,10 @@
+INFO {
+  TITLE: "finite Moore eventually output"
+  SEMANTICS: Finite,Moore
+  TARGET: Moore
+}
+MAIN {
+  INPUTS { i; }
+  OUTPUTS { o; }
+  GUARANTEES { F o; }
+}

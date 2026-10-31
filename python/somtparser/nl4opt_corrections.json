@@ -1,0 +1,256 @@
+{
+  "schema": "somt-nl4opt-corrections-v1",
+  "dataset_revision": "49f1e0d66b7fdcd33305a7f281c2a7c13f5620ea",
+  "review_basis": "Manual comparison with the frozen source document; no model proposals or generated answers used.",
+  "scope": "Local corrections for the 13 previously refused records, not a full annotation-quality audit.",
+  "entries": [
+    {
+      "id": "2091753729",
+      "split": "train",
+      "record_sha256": "f40e0c1c29d9928bf1c4d9a2d4b2ad6e18386fca073563851e965bba5cf92402",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "scientific calculator"
+          ],
+          "before": 1,
+          "after": 0,
+          "source_quote": "To make a scientific calculator",
+          "reason": "Scientific and graphing calculators are distinct decision entities; the singular scientific alias belongs to index 0."
+        }
+      ]
+    },
+    {
+      "id": "-374649990",
+      "split": "train",
+      "record_sha256": "9722295e5d1693749f72afcb86b8ca5ce9517353c44def8920e04f17b1aea74c",
+      "changes": [
+        {
+          "path": [
+            "const_declarations",
+            4,
+            "operator"
+          ],
+          "before": "GREATER_OR_EQUAL",
+          "after": "LESS_OR_EQUAL",
+          "source_quote": "can only prepare up to 100 items in total",
+          "reason": "The total is an upper bound, not the annotated lower bound."
+        }
+      ]
+    },
+    {
+      "id": "1133814426",
+      "split": "train",
+      "record_sha256": "7e1f3569ca1ea8b59d0474545beddb3dac83a30de0d7ec46c3006834d15c74a2",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "small package"
+          ],
+          "before": 0,
+          "after": 1,
+          "source_quote": "Each large package costs the store $3 and each small package costs the store $1",
+          "reason": "Small and large packages are distinct decision entities."
+        }
+      ]
+    },
+    {
+      "id": "-185815606",
+      "split": "train",
+      "record_sha256": "8573d7ab48e6facaae518e9934205ad73c04449358d58755aacad83c821c91fb",
+      "changes": [
+        {
+          "path": [
+            "const_declarations",
+            4,
+            "operator"
+          ],
+          "before": "GREATER_OR_EQUAL",
+          "after": "LESS_OR_EQUAL",
+          "source_quote": "can only prepare up to 120 items in total",
+          "reason": "The total is an upper bound, not the annotated lower bound."
+        }
+      ]
+    },
+    {
+      "id": "159070851",
+      "split": "train",
+      "record_sha256": "db79bcf94250dbb802bd47b1ac08b845ef710f1c3336d0a84244c15bb8a42ff3",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "Silver beach"
+          ],
+          "before": 1,
+          "after": 0,
+          "source_quote": "Each day at Silver beach, Jack finds 7 shrimps and 3 conches",
+          "reason": "Capitalization does not turn Silver Beach into Lucent Beach."
+        }
+      ]
+    },
+    {
+      "id": "-1149460127",
+      "split": "train",
+      "record_sha256": "9ebb39718aaf0a8d3bf1ced0ffa57921597582470369eaed9d48306356a2d484",
+      "changes": [
+        {
+          "path": [
+            "obj_declaration",
+            "terms"
+          ],
+          "before": {
+            "cheeseburgers": "1.50",
+            "cheeseburger": "1"
+          },
+          "after": {
+            "cheeseburgers": "1.50",
+            "fries": "1"
+          },
+          "source_quote": "x2 fries per day at a profit of $1 per fries",
+          "reason": "The second profit term belongs to fries, not a second alias for cheeseburgers."
+        }
+      ]
+    },
+    {
+      "id": "1981196061",
+      "split": "train",
+      "record_sha256": "e2bfcae34fe00a215987624b3c3dd1ea28b8b0ac2cf89006ff84ba5248c75614",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "action figure"
+          ],
+          "before": 2,
+          "after": 0,
+          "source_quote": "Each action figure takes 5 minutes",
+          "reason": "The singular alias denotes action figures, not a third entity."
+        },
+        {
+          "path": [
+            "order_mapping",
+            "toy car"
+          ],
+          "before": 2,
+          "after": 1,
+          "source_quote": "Each toy car takes 8 minutes",
+          "reason": "The singular alias denotes toy cars, not a third entity."
+        }
+      ]
+    },
+    {
+      "id": "1670020945",
+      "split": "dev",
+      "record_sha256": "e9734291e7ed0169a886da28f4abeccfadcf67f6e307cbe73d1169f6f55b30f2",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "economical mobile phone"
+          ],
+          "before": 1,
+          "after": 0,
+          "source_quote": "5 hours on each economical mobile phone but 12 hours on each premium one",
+          "reason": "Economical and premium phones are distinct decision entities."
+        }
+      ]
+    },
+    {
+      "id": "-641246185",
+      "split": "dev",
+      "record_sha256": "d35dba14f8192835882509507369f03e4a80bcf0d7572a70271150a3733ee51f",
+      "changes": [
+        {
+          "path": [
+            "obj_declaration",
+            "terms"
+          ],
+          "before": {},
+          "after": {
+            "Firemen": "1000",
+            "Volunteer fire patrols": "800"
+          },
+          "source_quote": "Firemen can put out 1000 sq ft of fire per trip",
+          "reason": "The objective is total extinguished area; source coefficients are 1000 and 800. Retain the stated constraints, even though the 8000-minute lower bound and 30-unit upper bound are jointly infeasible."
+        }
+      ]
+    },
+    {
+      "id": "1392566545",
+      "split": "dev",
+      "record_sha256": "787e6def288670d33127f508d8a1f0fe6996299444bdf8530e8680a29ff186aa",
+      "changes": [
+        {
+          "path": [
+            "obj_declaration",
+            "vars"
+          ],
+          "before": [],
+          "after": [
+            "cranes",
+            "elevators"
+          ],
+          "source_quote": "minimize the total number of transfer methods",
+          "reason": "The total number of methods is the sum of crane and elevator counts, with unit coefficients."
+        }
+      ]
+    },
+    {
+      "id": "-1770860412",
+      "split": "test",
+      "record_sha256": "0af5d73ae598181873f75002e19f09752a418cd82553700ecc0c4a53b2b5f628",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "graduate researcher"
+          ],
+          "before": 0,
+          "after": 1,
+          "source_quote": "An ultrasound technician works 8 hours per shift while a graduate researcher works 5 hours per shift",
+          "reason": "Graduate researchers and ultrasound technicians are distinct decision entities. The original structured ratio operator is retained; its prose interpretation is outside this alias repair."
+        }
+      ]
+    },
+    {
+      "id": "-1704758994",
+      "split": "test",
+      "record_sha256": "e28babd818561b279d1105c2aec59e29f4277328a80552eb7d9a341dfa13b936",
+      "changes": [
+        {
+          "path": [
+            "obj_declaration",
+            "vars"
+          ],
+          "before": [],
+          "after": [
+            "small packets",
+            "jugs"
+          ],
+          "source_quote": "maximize the total number of units",
+          "reason": "The source defines one sales unit as a packet set or a jug; the objective counts the two sales-unit types with unit coefficients."
+        }
+      ]
+    },
+    {
+      "id": "1695786577",
+      "split": "test",
+      "record_sha256": "22c90f344e9b81ac04a341167ef49069e3eb15e7bd33ee317f157a3e2fe8637c",
+      "changes": [
+        {
+          "path": [
+            "order_mapping",
+            "train"
+          ],
+          "before": 1,
+          "after": 0,
+          "source_quote": "Each train can transport 120 people per hour comfortably and each tram can transport 30 people",
+          "reason": "Trains and trams are distinct decision entities."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+(define (problem fall_at_end_hard) (:domain til-endpoint)
+  (:init (g) (at 10 (p)) (at 12 (not (p))))
+  (:goal (g))
+  (:constraints (at end (p)))
+  (:metric minimize total-time))

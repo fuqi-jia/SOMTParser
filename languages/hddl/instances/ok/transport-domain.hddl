@@ -1,0 +1,25 @@
+(define (domain transport)
+  (:requirements :strips :typing :hierarchy)
+  (:types truck location)
+  (:predicates
+    (at ?truck - truck ?location - location)
+    (road ?from - location ?to - location))
+
+  (:task deliver :parameters (?truck - truck ?to - location))
+
+  (:method deliver-direct
+    :parameters (?truck - truck ?from - location ?to - location)
+    :task (deliver ?truck ?to)
+    :ordered-subtasks (and
+      (drive ?truck ?from ?to)))
+
+  (:action drive
+    :parameters (?truck - truck ?from - location ?to - location)
+    :precondition (and (at ?truck ?from) (road ?from ?to))
+    :effect (and (not (at ?truck ?from)) (at ?truck ?to)))
+
+  ; Reaches the same goal, but no method is allowed to produce it.
+  (:action teleport
+    :parameters (?truck - truck ?to - location)
+    :precondition (and)
+    :effect (at ?truck ?to)))

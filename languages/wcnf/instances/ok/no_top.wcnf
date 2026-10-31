@@ -1,0 +1,5 @@
+c `p wcnf V C` with no top field: weighted MaxSAT with NO hard clauses. Every
+c clause is soft, whatever its weight -- there is no marker to compare against.
+p wcnf 2 2
+50 1 0
+1 -2 0

@@ -1,0 +1,1 @@
+(define (domain numeric) (:requirements :adl :fluents) (:predicates (done)) (:functions (x) (y)) (:action step :parameters () :precondition () :effect (and (done) (increase (x) 1.5) (decrease (x) 0.25))))

@@ -1,0 +1,13 @@
+INFO {
+  TITLE: "Mealy copy"
+  DESCRIPTION: "The controller copies the current environment bit"
+  SEMANTICS: Mealy
+  TARGET: Mealy
+}
+MAIN {
+  INPUTS { request; }
+  OUTPUTS { grant; }
+  GUARANTEES {
+    G (grant <-> request);
+  }
+}

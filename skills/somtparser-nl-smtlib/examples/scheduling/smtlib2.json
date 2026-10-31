@@ -1,0 +1,101 @@
+{
+  "schema": "somt-nl-formal-v1",
+  "language": "smtlib2",
+  "program": "(set-logic QF_LIA)\n(declare-const start_A Int)\n(declare-const start_B Int)\n(declare-const start_C Int)\n(assert (and (>= start_A 0) (<= start_A 6)))\n(assert (and (>= start_B 0) (<= start_B 6)))\n(assert (and (>= start_C 0) (<= start_C 6)))\n(assert (or (<= (+ start_A 2) start_B) (<= (+ start_B 3) start_A)))\n(assert (or (<= (+ start_A 2) start_C) (<= (+ start_C 1) start_A)))\n(assert (or (<= (+ start_B 3) start_C) (<= (+ start_C 1) start_B)))\n(minimize (ite (>= (ite (>= (+ start_A 2) (+ start_B 3)) (+ start_A 2) (+ start_B 3)) (+ start_C 1)) (ite (>= (+ start_A 2) (+ start_B 3)) (+ start_A 2) (+ start_B 3)) (+ start_C 1)))\n(check-sat)\n",
+  "decision": "optimization",
+  "assumptions": [],
+  "unresolved": [],
+  "links": [
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(declare-const start_A Int)"
+    },
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(assert (and (>= start_A 0) (<= start_A 6)))"
+    },
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(declare-const start_B Int)"
+    },
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(assert (and (>= start_B 0) (<= start_B 6)))"
+    },
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(declare-const start_C Int)"
+    },
+    {
+      "span": [
+        23,
+        35
+      ],
+      "fragment": "(assert (and (>= start_C 0) (<= start_C 6)))"
+    },
+    {
+      "span": [
+        12,
+        22
+      ],
+      "fragment": "(+ start_A 2)"
+    },
+    {
+      "span": [
+        12,
+        22
+      ],
+      "fragment": "(+ start_B 3)"
+    },
+    {
+      "span": [
+        12,
+        22
+      ],
+      "fragment": "(+ start_C 1)"
+    },
+    {
+      "span": [
+        36,
+        63
+      ],
+      "fragment": "(assert (or (<= (+ start_A 2) start_B) (<= (+ start_B 3) start_A)))"
+    },
+    {
+      "span": [
+        36,
+        63
+      ],
+      "fragment": "(assert (or (<= (+ start_A 2) start_C) (<= (+ start_C 1) start_A)))"
+    },
+    {
+      "span": [
+        36,
+        63
+      ],
+      "fragment": "(assert (or (<= (+ start_B 3) start_C) (<= (+ start_C 1) start_B)))"
+    },
+    {
+      "span": [
+        64,
+        73
+      ],
+      "fragment": "(minimize (ite (>= (ite (>= (+ start_A 2) (+ start_B 3)) (+ start_A 2) (+ start_B 3)) (+ start_C 1)) (ite (>= (+ start_A 2) (+ start_B 3)) (+ start_A 2) (+ start_B 3)) (+ start_C 1)))"
+    }
+  ]
+}

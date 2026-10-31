@@ -1,0 +1,9 @@
+#QCIR-G14
+# The standard's non-prenex example (§3.2). g2 binds x1 and x2 one level ABOVE
+# the gate they occur in, which is why scope follows the path from the output
+# and not the gate a name appears in.
+forall(z)
+output(g3)
+g1 = and(x1, x2, z)
+g2 = exists(x1, x2; g1)
+g3 = or(z, g2)

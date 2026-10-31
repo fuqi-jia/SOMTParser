@@ -1,0 +1,9 @@
+<instance format="XCSP3" type="CSP">
+  <variables>
+    <array id="rows" size="[4]">1 3 5</array>
+    <array id="diag" size="[2]" as="rows"/>
+  </variables>
+  <constraints>
+    <allDifferent>mod(add(diag[0],1),4) sub(diag[1],1)</allDifferent>
+  </constraints>
+</instance>

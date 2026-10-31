@@ -1,0 +1,7 @@
+; A state with NO `init` is unconstrained at step 0. Defaulting it to zero
+; would remove initial states and make this bad state unreachable -- reporting
+; "safe" for a circuit that is not.
+1 sort bitvec 1
+2 state 1 s
+3 next 1 2 2
+4 bad 2

@@ -25,6 +25,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include <cctype>
+#include <cstring>
 #include "somtparser/ir/dag.h"
 #include "somtparser/core/timing.h"
 #include "somtparser/core/util.h"
@@ -32,6 +34,7 @@
 #include <stack>
 #include <optional>
 #include <ostream>
+#include <stdexcept>
 #include <sstream>
 #include <streambuf>
 #include <unordered_set>
@@ -52,7 +55,7 @@ namespace SOMTParser{
             if (a->kind != b->kind || a->sort.get() != b->sort.get() ||
                 a->name != b->name || a->children.size() != b->children.size())
                 return false;
-            if (!a->children_hash.empty() && !b->children_hash.empty() &&
+            if (a->children_hash && b->children_hash &&
                 a->children_hash != b->children_hash) return false;
             if (!visited.emplace(a, b).second) continue;
             for (size_t i = a->children.size(); i > 0; --i)
@@ -61,24 +64,85 @@ namespace SOMTParser{
         return true;
     }
 
-    DAGNode::~DAGNode() {
-        // Release arbitrarily deep DAGs without recursion through shared_ptr.
-        // A nested destructor only queues its children; the outermost one
-        // drains the queue. Live shared nodes are never modified.
-        static thread_local std::vector<std::shared_ptr<DAGNode>>* active = nullptr;
-        if (active) {
-            for (auto& child : children) active->push_back(std::move(child));
-            return;
+    namespace {
+        struct DAGReleaseQueue {
+            DAGNode* head = nullptr;
+        };
+        // The outer destructor owns the queue; nested destructors only append
+        // their edges. Independent threads drain their own queues.
+        thread_local DAGReleaseQueue* releasingNodes = nullptr;
+    }
+
+    DAGNode::~DAGNode() noexcept {
+        if (children.empty()) return;
+        DAGReleaseQueue local;
+        const bool outer = releasingNodes == nullptr;
+        if (outer) releasingNodes = &local;
+        auto& queue = *releasingNodes;
+        for (auto& child : children) {
+            if (!child) continue;
+            auto& link = child->reclamation;
+            while (link.busy.test_and_set(std::memory_order_acquire)) {}
+            if (link.owner) {
+                // A queue already pins this node. Release the duplicate edge
+                // under the lock, before that queue can remove its pin.
+                child.reset();
+            } else {
+                link.owner = std::move(child);
+                link.next = queue.head;
+                queue.head = link.owner.get();
+            }
+            link.busy.clear(std::memory_order_release);
         }
-        std::vector<std::shared_ptr<DAGNode>> pending;
-        pending.swap(children);
-        active = &pending;
-        while (!pending.empty()) {
-            auto child = std::move(pending.back());
-            pending.pop_back();
+        if (!outer) return;
+        while (queue.head) {
+            auto& link = queue.head->reclamation;
+            while (link.busy.test_and_set(std::memory_order_acquire)) {}
+            queue.head = link.next;
+            link.next = nullptr;
+            auto child = std::move(link.owner);
+            link.busy.clear(std::memory_order_release);
+            // Only a true final release enters the child's destructor. That
+            // destructor enqueues its children and returns, so nesting stays
+            // constant even with deep, shared, or branching DAGs. No allocation
+            // or use_count snapshot is needed; weak_ptr::lock remains safe.
             child.reset();
         }
-        active = nullptr;
+        releasingNodes = nullptr;
+    }
+
+    using AliasMap = std::unordered_map<DAGNode*, std::string>;
+    struct AliasPlan;
+    struct AliasEnv {
+        const AliasEnv* parent = nullptr;
+        const AliasMap* root_aliases = nullptr;
+        const AliasPlan* plan = nullptr;
+        // Local aliases are visible only when their dependency level is
+        // strictly below this bound.
+        std::size_t visible_levels = 0;
+    };
+    struct AliasPlan {
+        std::vector<std::vector<std::pair<DAGNode*, std::string>>> groups;
+        AliasMap aliases;
+        std::unordered_map<DAGNode*, std::size_t> levels;
+        std::vector<AliasEnv> views;
+    };
+    static const std::string* lookup_alias(const AliasEnv* env, DAGNode* node) {
+        for (const AliasEnv* current = env; current; current = current->parent) {
+            if (current->plan) {
+                const auto level = current->plan->levels.find(node);
+                if (level != current->plan->levels.end()
+                    && level->second < current->visible_levels) {
+                    const auto alias = current->plan->aliases.find(node);
+                    if (alias != current->plan->aliases.end()) return &alias->second;
+                }
+            }
+            if (current->root_aliases) {
+                const auto alias = current->root_aliases->find(node);
+                if (alias != current->root_aliases->end()) return &alias->second;
+            }
+        }
+        return nullptr;
     }
 
     void DAGNode::updateFuncDef(std::shared_ptr<Sort> out_sort, std::shared_ptr<DAGNode> body, const std::vector<std::shared_ptr<DAGNode>> &params, bool is_rec){
@@ -135,30 +199,25 @@ namespace SOMTParser{
 
     /** A symbol as SMT-LIB can legally spell it.
      *
-     *  SMT-LIB 2.6 §3.1 gives a symbol two spellings: a SIMPLE symbol, whose
-     *  characters are letters, digits and `~!@$%^&*_-+=<>.?/` and which may not
-     *  start with a digit; and a QUOTED one, `|...|`, which may contain
-     *  anything but `|` and `\`. The two denote the same symbol, so choosing
-     *  between them is a printing decision.
+     *  SMT-LIB 2.6 §3.1 has two spellings: a SIMPLE symbol, whose characters
+     *  are letters, digits and `~!@$%^&*_-+=<>.?/` and which may not start with
+     *  a digit; and a QUOTED one, `|...|`, which may contain anything but `|`
+     *  and `\`. The two denote the same symbol -- that identity is what PR #52
+     *  established -- so choosing between them is a printing decision.
      *
-     *  It was not being made. A name that arrived quoted was printed quoted,
-     *  because the bars were kept as part of the name; a name built through the
-     *  public API was printed exactly as given. So a variable created as
-     *  `x(1)` -- legal through mkVar, and a perfectly ordinary identifier in
-     *  several input languages this library reads -- was emitted as
+     *  It was not being made. A name PARSED as `|x(1)|` came back quoted
+     *  because the bars were kept, and a name a frontend BUILT through the API
+     *  as `x(1)` was printed raw, producing `(declare-fun x(1) () Int)` -- which
+     *  no solver reads, and which this library's own parser only survives by
+     *  the lenient scan in getSymbol(). Column names like `x(1)` are ordinary
+     *  in MPS and LP, so a valid input file produced an unusable script.
      *
-     *      (declare-fun x(1) () Int)
-     *
-     *  which is not a well-formed command. No other solver accepts it, and this
-     *  library reads it back only because getSymbol() scans leniently, so the
-     *  defect did not show up in a round trip through this parser alone.
-     *
-     *  Quoting is applied where the symbol is printed rather than where it is
-     *  stored, because the stored name is the symbol's identity and `x(1)` and
-     *  `|x(1)|` are the same symbol. */
+     *  This is the "buildable but not readable" shape again: the API accepted
+     *  the name, everything downstream agreed, and the artefact was wrong. */
+    // Declared in dag.h; see there.
     std::string smtSymbolImpl(const std::string& name) {
         if (name.empty()) { return "||"; }
-        if (name.size() >= 2 && name.front() == '|' && name.back() == '|') {
+        if (name.front() == '|' && name.back() == '|' && name.size() >= 2) {
             return name;                       // already quoted; do not double it
         }
         auto simple = [](char c) {
@@ -182,6 +241,19 @@ namespace SOMTParser{
             && isRationalFormat(name)) {
             return formatRationalDivision(name);
         }
+        // A mathematical integer can still have exact sort Real. A bare
+        // numeral loses that sort in polymorphic contexts such as `as const`
+        // arrays: ((as const (Array Int Real)) 0) is rejected by Z3. Keep the
+        // decimal marker on Real numerals, including zero and negative values.
+        if (sort && sort->isReal() && !name.empty()) {
+            const bool signedName = name.front() == '-' || name.front() == '+';
+            const std::size_t first = signedName ? 1 : 0;
+            if (first < name.size()
+                && name.find_first_not_of("0123456789", first) == std::string::npos) {
+                const std::string numeral = name.substr(first) + ".0";
+                return name.front() == '-' ? "(- " + numeral + ")" : numeral;
+            }
+        }
         if(sort->isReal() || sort->isInt() || sort->isIntOrReal()){
             if(name[0] == '-'){
                 return "(- " + name.substr(1) + ")";
@@ -197,10 +269,56 @@ namespace SOMTParser{
             return name;
         }
         else if(sort->isFp()){
+            // A bare decimal is a *Real* in SMT-LIB, never a Float, so dumping
+            // `1.5` for a FloatingPoint constant produced a script this library
+            // could not read back: (fp.lt f 1.5) came back "Type mismatch in
+            // fp_lt". The round-trip property test never saw it because no
+            // instance in the corpus has a floating-point constant.
+            //
+            // The conversion form is the spelling that carries the format.
+            // Non-numeral names -- the special constants, and the bit-triple
+            // handled by the caller -- are left alone.
+            bool numeral = !name.empty();
+            for(size_t i = (name[0] == '-' || name[0] == '+') ? 1 : 0;
+                numeral && i < name.size(); ++i){
+                if(!std::isdigit(static_cast<unsigned char>(name[i])) && name[i] != '.'){
+                    numeral = false;
+                }
+            }
+            if(numeral && name.find_first_of("0123456789") != std::string::npos){
+                std::string inner = name;
+                if(inner[0] == '-'){
+                    inner = "(- " + inner.substr(1) + ")";
+                }
+                else if(inner[0] == '+'){
+                    inner = inner.substr(1);
+                }
+                return "((_ to_fp " + std::to_string(sort->getExponentWidth()) + " "
+                     + std::to_string(sort->getSignificandWidth()) + ") RNE "
+                     + inner + ")";
+            }
             return name;
         }
         else if(sort->isStr()){
-            return name;
+            // A string constant's name carries its SMT-LIB literal text, quotes
+            // included -- that is what the parser stores, and what makes a
+            // parsed script dump back to itself. Constants built through
+            // mkConstStr do not go through the parser and arrive unquoted, so
+            // dumping them verbatim produced `(str.contains s ab)`, which this
+            // library then rejected as an unknown symbol. Every producer is
+            // fixed at once by normalising here.
+            //
+            // SMT-LIB escapes a quote by doubling it, so an unquoted name
+            // containing one has to be escaped on the way in.
+            if(name.size() >= 2 && name.front() == '"' && name.back() == '"'){
+                return name;
+            }
+            std::string out = "\"";
+            for(char c : name){
+                if(c == '"') out += '"';
+                out += c;
+            }
+            return out + "\"";
         }
         else if(sort->isArray()){
             return name;
@@ -216,33 +334,65 @@ namespace SOMTParser{
     // literals (kept as NT_DIV_REAL "(/ a b)") and negations (NT_NEG "(- x)").
     static std::optional<Number> constToNumber(const std::shared_ptr<DAGNode>& n) {
         if (!n) return std::nullopt;
-        if (n->isCInt() || n->isCReal()) {
-            try { return Number(n->getName(), false); } catch (...) { return std::nullopt; }
+        using NK = NODE_KIND;
+        // Per-call memoization also keeps a shared arithmetic DAG from being
+        // expanded exponentially while preparing a single FP literal.
+        std::unordered_map<const DAGNode*, std::optional<Number>> values;
+        std::vector<std::pair<const DAGNode*, bool>> pending{{n.get(), false}};
+        while (!pending.empty()) {
+            const auto [node, ready] = pending.back();
+            pending.pop_back();
+            if (values.count(node)) continue;
+            if (!node) { values.emplace(node, std::nullopt); continue; }
+            if (node->isCInt() || node->isCReal()) {
+                try { values.emplace(node, Number(node->getName(), false)); }
+                catch (const std::bad_alloc&) { throw; }
+                catch (...) { values.emplace(node, std::nullopt); }
+                continue;
+            }
+            const auto kind = node->getKind();
+            const auto size = node->getChildrenSize();
+            const bool unary = (kind == NK::NT_NEG || kind == NK::NT_TO_REAL) && size == 1;
+            const bool division = (kind == NK::NT_DIV_REAL || kind == NK::NT_DIV_INT) && size == 2;
+            const bool fold = (kind == NK::NT_ADD || kind == NK::NT_SUB || kind == NK::NT_MUL) && size >= 1;
+            if (!unary && !division && !fold) {
+                values.emplace(node, std::nullopt);
+                continue;
+            }
+            if (!ready) {
+                pending.emplace_back(node, true);
+                for (std::size_t i = size; i > 0; --i) {
+                    const auto* child = node->getChild(i - 1).get();
+                    if (!values.count(child)) pending.emplace_back(child, false);
+                }
+                continue;
+            }
+            auto value = values.at(node->getChild(0).get());
+            if (value && (kind == NK::NT_NEG || (kind == NK::NT_SUB && size == 1))) {
+                value = -*value;
+            } else if (value && division) {
+                const auto& divisor = values.at(node->getChild(1).get());
+                if (!divisor || divisor->isZero()) {
+                    value.reset(); // An underspecified zero division cannot be folded.
+                } else if (kind == NK::NT_DIV_INT) {
+                    const auto dividend_int = value->asIntegerExact();
+                    const auto divisor_int = divisor->asIntegerExact();
+                    if (dividend_int && divisor_int) {
+                        value = Number(dividend_int->euclideanDiv(*divisor_int));
+                    } else { value.reset(); }
+                } else { value = *value / *divisor; }
+            } else if (value && fold) {
+                for (std::size_t i = 1; value && i < size; ++i) {
+                    const auto& child = values.at(node->getChild(i).get());
+                    if (!child) { value.reset(); break; }
+                    if (kind == NK::NT_ADD) value = *value + *child;
+                    else if (kind == NK::NT_SUB) value = *value - *child;
+                    else value = *value * *child;
+                }
+            }
+            values.emplace(node, std::move(value));
         }
-        const NODE_KIND k = n->getKind();
-        const size_t sz = n->getChildrenSize();
-        if (k == NODE_KIND::NT_NEG && sz == 1) {
-            auto a = constToNumber(n->getChild(0));
-            if (a) return -*a;
-        } else if ((k == NODE_KIND::NT_DIV_REAL || k == NODE_KIND::NT_DIV_INT) && sz == 2) {
-            auto a = constToNumber(n->getChild(0));
-            auto b = constToNumber(n->getChild(1));
-            if (a && b && !b->isZero()) return *a / *b;
-        } else if (k == NODE_KIND::NT_ADD && sz >= 1) {
-            auto acc = constToNumber(n->getChild(0)); if (!acc) return std::nullopt;
-            for (size_t i = 1; i < sz; ++i) { auto c = constToNumber(n->getChild(i)); if (!c) return std::nullopt; acc = *acc + *c; }
-            return acc;
-        } else if (k == NODE_KIND::NT_SUB && sz >= 1) {
-            auto acc = constToNumber(n->getChild(0)); if (!acc) return std::nullopt;
-            if (sz == 1) return -*acc;
-            for (size_t i = 1; i < sz; ++i) { auto c = constToNumber(n->getChild(i)); if (!c) return std::nullopt; acc = *acc - *c; }
-            return acc;
-        } else if (k == NODE_KIND::NT_MUL && sz >= 1) {
-            auto acc = constToNumber(n->getChild(0)); if (!acc) return std::nullopt;
-            for (size_t i = 1; i < sz; ++i) { auto c = constToNumber(n->getChild(i)); if (!c) return std::nullopt; acc = *acc * *c; }
-            return acc;
-        }
-        return std::nullopt;
+        return values.at(n.get());
     }
 
     // High-performance iterative streaming version to avoid stack overflow
@@ -302,6 +452,12 @@ namespace SOMTParser{
         uint64_t len_ = 0;
     };
 
+    struct ContextualPrintHashes {
+        const void* alias_context = nullptr;
+        std::unordered_map<DAGNode*, std::pair<uint64_t, uint64_t>> values;
+        void clear() { values.clear(); alias_context = nullptr; }
+    };
+
     // Takes a raw pointer so that a node can print itself without owning a
     // shared_ptr to itself (see DAGNode::orderKey). Ownership is the caller's;
     // this only reads.
@@ -309,7 +465,14 @@ namespace SOMTParser{
     // `hb`, when set, must be the streambuf backing `out`: it switches on the
     // subtree folding described on PrintHashBuf. It is null for ordinary
     // printing, which always walks the whole term.
-    void dumpSMTLIB2_streaming(DAGNode* root, std::ostream& out, PrintHashBuf* hb = nullptr) {
+    void dumpSMTLIB2_streaming(DAGNode* root, std::ostream& out, PrintHashBuf* hb = nullptr,
+                              const std::unordered_map<DAGNode*, std::string>* aliases = nullptr,
+                              bool lexical_sharing = false,
+                              const DAGNode* lexical_function = nullptr,
+                              ContextualPrintHashes* contextual_hashes = nullptr,
+                              bool sort_alias_renderings = false,
+                              const AliasEnv* inherited_alias_context = nullptr,
+                              const void* hash_alias_context = nullptr) {
         if (!root) return;
 
         DAGNode* actualRoot = root;
@@ -359,20 +522,340 @@ namespace SOMTParser{
         struct WorkItem {
             DAGNode* node;
             uint8_t action; // 0=process, 1=space, 2=close_paren, 3=close_paren_space, 4=text_output
+            const AliasEnv* aliases;
 
-            WorkItem(DAGNode* n, uint8_t a = 0) : node(n), action(a) {}
+            WorkItem(DAGNode* n, uint8_t a = 0,
+                     const AliasEnv* active_aliases = nullptr)
+                : node(n), action(a), aliases(active_aliases) {}
             
             // For text output
             std::string text;
-            WorkItem(const std::string& t, uint8_t a = 4) : node(nullptr), action(a), text(t) {}
+            WorkItem(const std::string& t, uint8_t a = 4) : node(nullptr), action(a), aliases(nullptr), text(t) {}
         };
 
         // Pre-allocate stack with reasonable capacity to avoid frequent reallocations
         std::vector<WorkItem> work_stack;
-        work_stack.reserve(65536); // Reserve space for deep expressions
-        work_stack.emplace_back(actualRoot, 0);
+        // Hashing a node whose children are cached needs only a small local
+        // stack; reserving the full text-printer stack per leaf wastes memory.
+        work_stack.reserve(hb ? 64 : 65536);
+        const uint8_t scope_action = lexical_sharing && !hb ? 5 : 0;
+        AliasEnv root_alias_env{inherited_alias_context, aliases, nullptr, 0};
+        work_stack.emplace_back(actualRoot, scope_action, &root_alias_env);
+
+        // Alias planning and collision detection follow the serializer's
+        // term edges.
+        // Function applications store their declaration/definition in child
+        // zero for evaluation and expansion, but the printer emits only the
+        // actual arguments. Function declaration/definition nodes are metadata
+        // when reached from a term and are printed by their dedicated command
+        // writers, not by this expression serializer. Walking these edges can
+        // hoist a function body's parameter-dependent subterm into the caller's
+        // scope and emit a free parameter in an otherwise valid expression.
+        const auto printed_child_range = [](DAGNode* n) {
+            const std::size_t count = n->getChildrenSize();
+            switch (n->getKind()) {
+            case NODE_KIND::NT_FUNC_APPLY:
+            case NODE_KIND::NT_FUNC_REC_APPLY:
+                return std::pair<std::size_t, std::size_t>{
+                    std::min<std::size_t>(1, count), count};
+            case NODE_KIND::NT_FUNC_DEC:
+            case NODE_KIND::NT_FUNC_DEF:
+            case NODE_KIND::NT_FUNC_REC:
+            case NODE_KIND::NT_FUNC_PARAM:
+                return std::pair<std::size_t, std::size_t>{count, count};
+            default:
+                return std::pair<std::size_t, std::size_t>{0, count};
+            }
+        };
+
+        std::vector<std::unique_ptr<AliasPlan>> owned_alias_plans;
+        std::unordered_set<std::string> taken_symbols;
+        std::size_t alias_serial = 0;
+        const auto remember_symbol = [&](const std::string& name) {
+            taken_symbols.insert(name.size() >= 2 && name.front() == '|' && name.back() == '|'
+                ? name.substr(1, name.size() - 2) : name);
+        };
+        if (lexical_sharing) {
+            std::vector<DAGNode*> names_to_scan{actualRoot};
+            std::unordered_set<DAGNode*> names_seen;
+            while (!names_to_scan.empty()) {
+                DAGNode* n = names_to_scan.back(); names_to_scan.pop_back();
+                if (!n || !names_seen.insert(n).second) continue;
+                remember_symbol(n->getName());
+                // A call prints its name and arguments, never the helper's
+                // body or formal parameters. Scanning that metadata repeats
+                // entire definition closures at every caller and reserves
+                // names which are not visible in this lexical term.
+                const auto range = printed_child_range(n);
+                for (std::size_t i = range.first; i < range.second; ++i)
+                    names_to_scan.push_back(n->getChild(i).get());
+            }
+            if (lexical_function) {
+                remember_symbol(lexical_function->getName());
+                for (std::size_t i = 1; i < lexical_function->getChildrenSize(); ++i)
+                    remember_symbol(lexical_function->getChild(i)->getName());
+            }
+        }
+
+        const auto is_scope_binder = [](DAGNode* n) {
+            switch (n->getKind()) {
+            case NODE_KIND::NT_FORALL: case NODE_KIND::NT_EXISTS:
+            case NODE_KIND::NT_LET: case NODE_KIND::NT_LET_CHAIN:
+            case NODE_KIND::NT_DT_MATCH:
+            case NODE_KIND::NT_ATTRIBUTE: case NODE_KIND::NT_PATTERN:
+            case NODE_KIND::NT_NO_PATTERN: case NODE_KIND::NT_WEIGHT:
+            case NODE_KIND::NT_QID: case NODE_KIND::NT_LET_BIND_VAR:
+            case NODE_KIND::NT_LET_BIND_VAR_LIST:
+                return true;
+            default: return false;
+            }
+        };
+        const auto is_function_metadata = [](DAGNode* n) {
+            switch (n->getKind()) {
+            case NODE_KIND::NT_FUNC_DEC:
+            case NODE_KIND::NT_FUNC_DEF:
+            case NODE_KIND::NT_FUNC_REC:
+            case NODE_KIND::NT_FUNC_PARAM:
+                return true;
+            default:
+                return false;
+            }
+        };
+        const auto is_commutative = [](NODE_KIND kind) {
+            switch (kind) {
+            case NODE_KIND::NT_ADD: case NODE_KIND::NT_MUL:
+            case NODE_KIND::NT_AND: case NODE_KIND::NT_IAND:
+            case NODE_KIND::NT_OR: case NODE_KIND::NT_XOR:
+            case NODE_KIND::NT_BV_ADD: case NODE_KIND::NT_BV_MUL:
+            case NODE_KIND::NT_BV_AND: case NODE_KIND::NT_BV_OR:
+            case NODE_KIND::NT_BV_XOR: case NODE_KIND::NT_EQ:
+            case NODE_KIND::NT_DISTINCT: case NODE_KIND::NT_MAX:
+            case NODE_KIND::NT_MIN: case NODE_KIND::NT_BV_NAND:
+            case NODE_KIND::NT_BV_NOR: case NODE_KIND::NT_BV_XNOR:
+            case NODE_KIND::NT_BV_COMP: case NODE_KIND::NT_BV_UADDO:
+            case NODE_KIND::NT_BV_SADDO: case NODE_KIND::NT_BV_UMULO:
+            case NODE_KIND::NT_BV_SMULO: case NODE_KIND::NT_FP_EQ:
+            case NODE_KIND::NT_FP_MIN: case NODE_KIND::NT_FP_MAX:
+                return true;
+            default:
+                return false;
+            }
+        };
+        ContextualPrintHashes local_contextual_hashes;
+        const void* local_context_env = nullptr;
+        // The parser orders commutative children by the hash of their printed
+        // form (DAGNode::orderKey). In shared output, that form includes aliases
+        // at every descendant, with descendant commutative nodes already
+        // canonicalized. Compute these hashes bottom-up and memoize by node in
+        // the current alias environment: child hashes are absorbed by the
+        // iterative printer, avoiding expanded strings and repeated DAG walks.
+        const auto build_context_hash = [&](DAGNode* hash_root, const AliasEnv* env,
+                                            ContextualPrintHashes& cache) {
+            std::vector<std::pair<DAGNode*, bool>> pending{{hash_root, false}};
+            std::unordered_set<DAGNode*> seen;
+            while (!pending.empty()) {
+                const auto item = pending.back();
+                pending.pop_back();
+                DAGNode* current = item.first;
+                if (!current) continue;
+                if (!item.second) {
+                    if (const std::string* alias = lookup_alias(env, current)) {
+                        uint64_t hash = 0;
+                        for (unsigned char byte : *alias)
+                            hash = hash * PrintHashBuf::BASE + byte;
+                        cache.values[current] = {hash, static_cast<uint64_t>(alias->size())};
+                        continue;
+                    }
+                    if (cache.values.count(current) || !seen.insert(current).second) continue;
+                    if (is_scope_binder(current)) {
+                        current->orderKey();
+                        cache.values.emplace(current,
+                            std::make_pair(current->printHash(), current->printLength()));
+                        continue;
+                    }
+                    pending.emplace_back(current, true);
+                    const auto range = printed_child_range(current);
+                    for (std::size_t i = range.second; i > range.first; --i) {
+                        DAGNode* child = current->getChild(i - 1).get();
+                        if (child && !lookup_alias(env, child) && !cache.values.count(child))
+                            pending.emplace_back(child, false);
+                    }
+                    continue;
+                }
+                PrintHashBuf hashbuf;
+                std::ostream hashout(&hashbuf);
+                dumpSMTLIB2_streaming(current, hashout, &hashbuf, nullptr, false,
+                                      nullptr, &cache, true, env, env);
+                cache.values[current] = {hashbuf.hash(), hashbuf.length()};
+            }
+        };
+        const auto shared_ordered_children = [&](DAGNode* n, const AliasEnv* env) {
+            std::vector<DAGNode*> children;
+            const auto& source = n->getChildren();
+            children.reserve(source.size());
+            for (const auto& child : source) children.push_back(child.get());
+            if ((!lexical_sharing && !sort_alias_renderings)
+                || !is_commutative(n->getKind()) || children.size() < 2)
+                return children;
+
+            const void* cache_context = hash_alias_context
+                ? hash_alias_context : static_cast<const void*>(env);
+            ContextualPrintHashes* cache = contextual_hashes;
+            if (cache) {
+                // A nested hash printer may be invoked under a different alias
+                // view while sharing the caller's memo table. Keep entries only
+                // within that immutable alias context.
+                if (cache->alias_context != cache_context) {
+                    cache->values.clear();
+                    cache->alias_context = cache_context;
+                }
+            } else {
+                if (local_context_env != cache_context) {
+                    local_contextual_hashes.clear();
+                    local_contextual_hashes.alias_context = cache_context;
+                    local_context_env = cache_context;
+                }
+                cache = &local_contextual_hashes;
+            }
+            std::vector<std::pair<DAGNode*, std::size_t>> keyed;
+            keyed.reserve(children.size());
+            for (DAGNode* child : children) {
+                build_context_hash(child, env, *cache);
+                const auto hash = cache->values.find(child);
+                keyed.emplace_back(child, hash == cache->values.end()
+                    ? child->orderKey()
+                    : static_cast<std::size_t>(hash->second.first));
+            }
+            std::stable_sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) {
+                return a.second < b.second;
+            });
+            for (std::size_t i = 0; i < keyed.size(); ++i) children[i] = keyed[i].first;
+            return children;
+        };
+        const auto make_alias_plan = [&](DAGNode* scope_root, const AliasEnv* base) {
+            auto plan = std::make_unique<AliasPlan>();
+            std::unordered_map<DAGNode*, unsigned char> state;
+            std::unordered_map<DAGNode*, std::size_t> references;
+            std::vector<DAGNode*> postorder;
+            std::vector<std::pair<DAGNode*, bool>> pending{{scope_root, false}};
+            references[scope_root] = 1;
+            while (!pending.empty()) {
+                const auto entry = pending.back(); pending.pop_back();
+                DAGNode* n = entry.first;
+                if (!n || lookup_alias(base, n)) continue;
+                if (entry.second) {
+                    state[n] = 2;
+                    postorder.push_back(n);
+                    continue;
+                }
+                const auto found = state.find(n);
+                if (found != state.end()) {
+                    if (found->second == 1) return plan;
+                    continue;
+                }
+                state[n] = 1;
+                pending.emplace_back(n, true);
+                if (!is_scope_binder(n)) {
+                    const auto range = printed_child_range(n);
+                    for (std::size_t i = range.second; i > range.first; --i) {
+                        DAGNode* child = n->getChild(i - 1).get();
+                        if (!child || lookup_alias(base, child)) continue;
+                        ++references[child];
+                        if (state.find(child) == state.end())
+                            pending.emplace_back(child, false);
+                    }
+                }
+            }
+            std::unordered_map<DAGNode*, std::size_t> costs;
+            std::unordered_map<DAGNode*, int> levels;
+            constexpr std::size_t cap = 1024ULL * 1024ULL * 1024ULL;
+            std::vector<std::pair<DAGNode*, std::string>> selected;
+            for (DAGNode* n : postorder) {
+                int child_level = -1;
+                std::size_t cost = std::min(cap, n->getName().size() + 4);
+                if (!is_scope_binder(n)) {
+                    const auto range = printed_child_range(n);
+                    for (std::size_t i = range.first; i < range.second; ++i) {
+                        DAGNode* child = n->getChild(i).get();
+                        if (!child || lookup_alias(base, child)) continue;
+                        const auto ci = costs.find(child);
+                        const auto li = levels.find(child);
+                        if (ci != costs.end()) cost = std::min(cap, cost + ci->second + 1);
+                        if (li != levels.end()) child_level = std::max(child_level, li->second);
+                    }
+                }
+                levels[n] = child_level;
+                costs[n] = cost;
+                if (references[n] < 2 || n->getChildrenSize() == 0
+                    || is_function_metadata(n)
+                    || n->getKind() == NODE_KIND::NT_ATTRIBUTE
+                    || n->getKind() == NODE_KIND::NT_PATTERN
+                    || n->getKind() == NODE_KIND::NT_NO_PATTERN
+                    || n->getKind() == NODE_KIND::NT_WEIGHT
+                    || n->getKind() == NODE_KIND::NT_QID
+                    || n->getKind() == NODE_KIND::NT_LET_BIND_VAR
+                    || n->getKind() == NODE_KIND::NT_LET_BIND_VAR_LIST
+                    || n->getKind() == NODE_KIND::NT_DT_MATCH) continue;
+                std::string name;
+                do { name = "__somt_dag_" + std::to_string(alias_serial++); }
+                while (taken_symbols.count(name));
+                if (static_cast<long double>(references[n] - 1) * cost
+                    <= static_cast<long double>(references[n] + 1) * name.size() + 8) continue;
+                taken_symbols.insert(name);
+                selected.emplace_back(n, name);
+                costs[n] = name.size();
+                levels[n] = child_level + 1;
+            }
+            if (selected.empty()) return plan;
+            int max_level = 0;
+            for (const auto& s : selected) max_level = std::max(max_level, levels[s.first]);
+            plan->groups.resize(static_cast<std::size_t>(max_level + 1));
+            for (auto& s : selected) {
+                const std::size_t level = static_cast<std::size_t>(levels[s.first]);
+                plan->levels.emplace(s.first, level);
+                plan->aliases.emplace(s.first, s.second);
+                plan->groups[level].push_back(std::move(s));
+            }
+            plan->views.resize(plan->groups.size() + 1);
+            for (std::size_t i = 0; i < plan->views.size(); ++i) {
+                plan->views[i] = AliasEnv{base, nullptr, plan.get(), i};
+            }
+            return plan;
+        };
+        const auto push_text = [&](const std::string& text) {
+            work_stack.emplace_back(text, 4);
+        };
+        const auto schedule_scope = [&](DAGNode* scope_root, const AliasEnv* base) {
+            auto plan = make_alias_plan(scope_root, base);
+            if (plan->groups.empty()) {
+                work_stack.emplace_back(scope_root, 0, base);
+                return;
+            }
+            AliasPlan* active_plan = plan.get();
+            owned_alias_plans.push_back(std::move(plan));
+            for (std::size_t i = 0; i < active_plan->groups.size(); ++i) {
+                work_stack.emplace_back(nullptr, 2);
+            }
+            work_stack.emplace_back(scope_root, 0, &active_plan->views.back());
+            for (std::size_t gi = active_plan->groups.size(); gi-- > 0;) {
+                const auto& group = active_plan->groups[gi];
+                work_stack.emplace_back(") ", 4);
+                for (std::size_t bi = group.size(); bi-- > 0;) {
+                    work_stack.emplace_back(")", 4);
+                    work_stack.emplace_back(group[bi].first, 0, &active_plan->views[gi]);
+                    work_stack.emplace_back(" ", 4);
+                    work_stack.emplace_back(group[bi].second, 4);
+                    work_stack.emplace_back("(", 4);
+                    if (bi) work_stack.emplace_back(" ", 4);
+                }
+                work_stack.emplace_back("(let (", 4);
+            }
+        };
 
         while (!work_stack.empty()) {
+            // Once the sink fails, stop walking the remaining DAG. The public
+            // streaming wrapper below turns this into a diagnostic exception.
+            if (!out) return;
             WorkItem item = work_stack.back();
             work_stack.pop_back();
 
@@ -392,16 +875,36 @@ namespace SOMTParser{
                 out << item.text;
                 continue;
             }
+            if (item.action == 5) { // Start a lexical scope with local aliases
+                schedule_scope(item.node, item.aliases);
+                continue;
+            }
             
 
             // Process node (action == 0)
             DAGNode* node = item.node;
             if (!node) continue;
 
+            // Local let references are a printing choice only. orderKey()
+            // continues hashing the expanded canonical term without aliases.
+            const auto* active_aliases = item.aliases ? item.aliases : &root_alias_env;
+            if (const auto* alias = lookup_alias(active_aliases, node)) {
+                out << *alias;
+                continue;
+            }
+
+            if (hb && contextual_hashes) {
+                const auto contextual = contextual_hashes->values.find(node);
+                if (contextual != contextual_hashes->values.end()) {
+                    hb->absorb(contextual->second.first, contextual->second.second);
+                    continue;
+                }
+            }
+
             // Every node -- root and child alike -- reaches the printer through
             // this one point, so folding in an already-hashed subtree here
             // covers all of them.
-            if (hb && node->hasPrintHash()) {
+            if (hb && !contextual_hashes && node->hasPrintHash()) {
                 hb->absorb(node->printHash(), node->printLength());
                 continue;
             }
@@ -427,14 +930,23 @@ namespace SOMTParser{
                     auto mant = node->getChild(2).get();
                     out << "(fp ";
                     work_stack.emplace_back(nullptr, 2);  // )
-                    work_stack.emplace_back(mant, 0);     // mant
+                    work_stack.emplace_back(mant, 0, active_aliases);     // mant
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(exp, 0);      // exp
+                    work_stack.emplace_back(exp, 0, active_aliases);      // exp
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(sign, 0);     // sign
+                    work_stack.emplace_back(sign, 0, active_aliases);     // sign
                 } else {
                     out << dumpConst(node->getName(), node->getSort());
                 }
+                break;
+            // set.empty and set.universe carry their sort in the term, not in
+            // the operator, so printing the bare name loses it and the dumped
+            // script does not re-parse -- the same failure the floating-point
+            // and string constants had.
+            case NODE_KIND::NT_SET_EMPTY:
+            case NODE_KIND::NT_SET_UNIVERSE:
+                out << "(as " << node->getName() << " "
+                    << node->getSort()->toString() << ")";
                 break;
             case NODE_KIND::NT_VAR:
             case NODE_KIND::NT_TEMP_VAR:
@@ -446,7 +958,7 @@ namespace SOMTParser{
                 out << node->getSort()->toString();
                 out << ") ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(node->getChild(0).get(), 0);   // child0
+                work_stack.emplace_back(node->getChild(0).get(), 0, active_aliases);   // child0
                 break;
             }
 
@@ -461,17 +973,18 @@ namespace SOMTParser{
             case NODE_KIND::NT_SUB:
             case NODE_KIND::NT_DIV_REAL: {
                 if (node->getChildrenSize() == 2) {
-                    auto child0 = node->getChild(0).get();
-                    auto child1 = node->getChild(1).get();
+                    const auto children = shared_ordered_children(node, active_aliases);
+                    auto child0 = children[0];
+                    auto child1 = children[1];
 
                     const char* op = kind_cache[kind];
                     out << "(" << op << " ";
 
                     // Push in reverse order: close_paren, child1, space, child0
                     work_stack.emplace_back(nullptr, 2);  // )
-                    work_stack.emplace_back(child1, 0);   // child1
+                    work_stack.emplace_back(child1, 0, active_aliases);   // child1
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(child0, 0);   // child0
+                    work_stack.emplace_back(child0, 0, active_aliases);   // child0
                     break;
                 }
                 // Fall through to n-ary case
@@ -487,15 +1000,15 @@ namespace SOMTParser{
                 const std::string op = kind_cache[kind] ? kind_cache[kind] : kindToString(kind);
 
                 out << "(" << op;
-                const auto& children = node->getChildren();
+                const auto children = shared_ordered_children(node, active_aliases);
 
                 // Push closing paren first
                 work_stack.emplace_back(nullptr, 2);
 
                 // Push children in reverse order, each preceded by a space
-                for (int i = children.size() - 1; i >= 0; i--) {
-                    auto child = children[i].get();
-                    work_stack.emplace_back(child, 0);
+                for (int i = static_cast<int>(children.size()) - 1; i >= 0; i--) {
+                    auto child = children[static_cast<std::size_t>(i)];
+                    work_stack.emplace_back(child, 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1); // space before child
                 }
                 break;
@@ -510,11 +1023,11 @@ namespace SOMTParser{
 
                 // Push: ), child0, ") ", child2, " ", child1
                 work_stack.emplace_back(nullptr, 2);     // )
-                work_stack.emplace_back(child0, 0);      // child0
+                work_stack.emplace_back(child0, 0, active_aliases);      // child0
                 work_stack.emplace_back(nullptr, 3);     // ") " - special case
-                work_stack.emplace_back(child2, 0);      // child2
+                work_stack.emplace_back(child2, 0, active_aliases);      // child2
                 work_stack.emplace_back(nullptr, 1);     // space
-                work_stack.emplace_back(child1, 0);      // child1
+                work_stack.emplace_back(child1, 0, active_aliases);      // child1
                 break;
             }
             // Unary operations
@@ -525,7 +1038,7 @@ namespace SOMTParser{
 
                 out << "(" << op << " ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child, 0);    // child
+                work_stack.emplace_back(child, 0, active_aliases);    // child
                 break;
             }
 
@@ -537,11 +1050,11 @@ namespace SOMTParser{
 
                 out << "(ite ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child2, 0);   // child2
+                work_stack.emplace_back(child2, 0, active_aliases);   // child2
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(child1, 0);   // child1
+                work_stack.emplace_back(child1, 0, active_aliases);   // child1
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(child0, 0);   // child0
+                work_stack.emplace_back(child0, 0, active_aliases);   // child0
                 break;
             }
 
@@ -553,11 +1066,11 @@ namespace SOMTParser{
 
                 out << "((_ extract ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child0, 0);   // child0
+                work_stack.emplace_back(child0, 0, active_aliases);   // child0
                 work_stack.emplace_back(nullptr, 3);  // ") "
-                work_stack.emplace_back(child2, 0);   // child2
+                work_stack.emplace_back(child2, 0, active_aliases);   // child2
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(child1, 0);   // child1
+                work_stack.emplace_back(child1, 0, active_aliases);   // child1
                 break;
             }
             case NODE_KIND::NT_BV_REPEAT:
@@ -580,9 +1093,9 @@ namespace SOMTParser{
 
                 out << "((_ " << kindToString(kind) << " ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child0, 0);   // child0
+                work_stack.emplace_back(child0, 0, active_aliases);   // child0
                 work_stack.emplace_back(nullptr, 3);  // ") "
-                work_stack.emplace_back(child1, 0);   // child1
+                work_stack.emplace_back(child1, 0, active_aliases);   // child1
                 break;
             }
 
@@ -651,20 +1164,26 @@ namespace SOMTParser{
                 for (size_t i = 1; i < node->getChildrenSize(); i++) {
                     auto current_child = node->getChild(i).get();
                     if (i == 1){
-                        out << "(" << current_child->getName() << " " << current_child->getSort()->toString() << ")";
+                        out << "(" << smtSymbolImpl(current_child->getName()) << " " << current_child->getSort()->toString() << ")";
                     }
                     else{
-                        out << " (" << current_child->getName() << " " << current_child->getSort()->toString() << ")";
+                        out << " (" << smtSymbolImpl(current_child->getName()) << " " << current_child->getSort()->toString() << ")";
                     }
                 }
                 out << ") ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(node->getChild(0).get(), 0);  // body
+                // Binder names may reuse the same hash-consed variable node
+                // as an outer same-name/same-sort binder. Do not expose the
+                // outer scope's aliases below this lexical boundary; build a
+                // fresh local plan instead.
+                work_stack.emplace_back(node->getChild(0).get(), scope_action, nullptr);  // scoped body
                 break;
             }
 
             case NODE_KIND::NT_QUANT_VAR:
-                out << node->getName();
+                // Binders and their uses must have the same legal spelling.
+                // QCIR permits numeric names, which SMT-LIB requires quoted.
+                out << smtSymbolImpl(node->getName());
                 break;
 
             // Function related
@@ -672,7 +1191,7 @@ namespace SOMTParser{
             case NODE_KIND::NT_FUNC_DEF:
             case NODE_KIND::NT_FUNC_REC:
             case NODE_KIND::NT_FUNC_PARAM:
-                out << node->getName();
+                out << smtSymbolImpl(node->getName());
                 break;
 
             // Function applications
@@ -680,13 +1199,13 @@ namespace SOMTParser{
                 // For NT_FUNC_APPLY, children[0] is function, children[1..] are parameters
                 // If no parameters (size <= 1), output just the name without parentheses
                 if (node->getChildrenSize() <= 1) {
-                    out << node->getName();
+                    out << smtSymbolImpl(node->getName());
                 } else {
-                    out << "(" << node->getName();
+                    out << "(" << smtSymbolImpl(node->getName());
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = node->getChildrenSize() - 1; i >= 1; i--) {
                         auto current_child = node->getChild(i).get();
-                        work_stack.emplace_back(current_child, 0);
+                        work_stack.emplace_back(current_child, 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -700,13 +1219,16 @@ namespace SOMTParser{
                 // Stack order (reverse): ) + body + ") " + bindings + "(let ("
                 
                 work_stack.emplace_back(")", 4);  // final )
-                work_stack.emplace_back(node->getChild(0).get(), 0);  // body
+                // A let body is under the new bindings; inherited DAG aliases
+                // could refer to an outer same-name variable. Binding values
+                // below remain in the enclosing scope.
+                work_stack.emplace_back(node->getChild(0).get(), scope_action, nullptr);  // scoped body
                 work_stack.emplace_back(") ", 4);  // close binding list and add space
                 
                 // Process bindings in reverse order for stack
                 for(int i = node->getChildrenSize() - 1; i >= 1; i--){
                     work_stack.emplace_back(")", 4);  // ) for this binding
-                    work_stack.emplace_back(node->getChild(i)->getChild(0).get(), 0);  // binding value
+                    work_stack.emplace_back(node->getChild(i)->getChild(0).get(), scope_action, active_aliases);  // scoped binding value
                     work_stack.emplace_back(" ", 4);  // space before value
                     work_stack.emplace_back(node->getChild(i)->getPureName(), 4);  // variable name
                     work_stack.emplace_back("(", 4);  // ( for this binding
@@ -730,7 +1252,11 @@ namespace SOMTParser{
                 }
                 
                 // Add body
-                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 1).get(), 0);
+                // Later let-chain values can see earlier bindings, and the
+                // final body sees the whole chain. Start an independent alias
+                // environment at both positions to avoid capturing shadowed
+                // nodes from the enclosing scope.
+                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 1).get(), scope_action, nullptr);
                 
                 // Process let bindings in reverse order
                 for(int i = num_bindings - 1; i >= 0; i--){
@@ -742,7 +1268,7 @@ namespace SOMTParser{
                     // Process variables in this binding list (reverse order)
                     for(int j = var_list->getChildrenSize() - 1; j >= 0; j--){
                         work_stack.emplace_back(")", 4);  // ) for binding
-                        work_stack.emplace_back(var_list->getChild(j)->getChild(0).get(), 0);  // binding value
+                        work_stack.emplace_back(var_list->getChild(j)->getChild(0).get(), scope_action, nullptr);  // scoped binding value
                         work_stack.emplace_back(" ", 4);  // space before value
                         work_stack.emplace_back(var_list->getChild(j)->getPureName(), 4);  // variable name
                         work_stack.emplace_back("(", 4);  // ( for binding
@@ -769,7 +1295,7 @@ namespace SOMTParser{
                 // Process bindings in reverse order for stack
                 for(int i = node->getChildrenSize() - 1; i >= 1; i--){
                     work_stack.emplace_back(")", 4);  // ) for this binding
-                    work_stack.emplace_back(node->getChild(i)->getChild(0).get(), 0);  // binding value
+                    work_stack.emplace_back(node->getChild(i)->getChild(0).get(), scope_action, active_aliases);  // scoped binding value
                     work_stack.emplace_back(" ", 4);  // space before value
                     work_stack.emplace_back(node->getChild(i)->getPureName(), 4);  // variable name
                     work_stack.emplace_back("(", 4);  // ( for this binding
@@ -787,13 +1313,13 @@ namespace SOMTParser{
                 // If no parameters (size == 0), output just the name without parentheses
                 const auto& children = node->getChildren();
                 if (children.empty()) {
-                    out << node->getName();
+                    out << smtSymbolImpl(node->getName());
                 } else {
-                    out << "(" << node->getName();
+                    out << "(" << smtSymbolImpl(node->getName());
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = children.size() - 1; i >= 0; i--) {  // Start from 0
                         auto current_child = children[i].get();
-                        work_stack.emplace_back(current_child, 0);
+                        work_stack.emplace_back(current_child, 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -823,7 +1349,7 @@ namespace SOMTParser{
                     out << "(" << node->getName();
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = children.size() - 1; i >= 0; i--) {
-                        work_stack.emplace_back(children[i].get(), 0);
+                        work_stack.emplace_back(children[i].get(), 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -838,7 +1364,7 @@ namespace SOMTParser{
                     out << "(" << node->getName();
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = children.size() - 1; i >= 0; i--) {
-                        work_stack.emplace_back(children[i].get(), 0);
+                        work_stack.emplace_back(children[i].get(), 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -858,7 +1384,7 @@ namespace SOMTParser{
                     out << "((_ is " << ctor << ")";
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = children.size() - 1; i >= 0; i--) {
-                        work_stack.emplace_back(children[i].get(), 0);
+                        work_stack.emplace_back(children[i].get(), 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -870,7 +1396,7 @@ namespace SOMTParser{
                 out << "((_ update " << node->getName() << ")";
                 work_stack.emplace_back(nullptr, 2);  // )
                 for (int i = children.size() - 1; i >= 0; i--) {
-                    work_stack.emplace_back(children[i].get(), 0);
+                    work_stack.emplace_back(children[i].get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -884,7 +1410,11 @@ namespace SOMTParser{
                 out << "(!";
                 work_stack.emplace_back(nullptr, 2);  // )
                 for (int i = children.size() - 1; i >= 0; i--) {
-                    work_stack.emplace_back(children[i].get(), 0);
+                    if (i == 0) {
+                        work_stack.emplace_back(children[i].get(), scope_action, active_aliases);
+                    } else {
+                        work_stack.emplace_back(children[i].get(), 0, nullptr);
+                    }
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -894,7 +1424,7 @@ namespace SOMTParser{
                 out << ":pattern (";
                 work_stack.emplace_back(nullptr, 2);  // )
                 for (int i = children.size() - 1; i >= 0; i--) {
-                    work_stack.emplace_back(children[i].get(), 0);
+                    work_stack.emplace_back(children[i].get(), 0, nullptr);
                     if (i) work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -902,14 +1432,14 @@ namespace SOMTParser{
             case NODE_KIND::NT_NO_PATTERN: {
                 out << ":no-pattern ";
                 if (node->getChildrenSize() > 0) {
-                    work_stack.emplace_back(node->getChild(0).get(), 0);
+                    work_stack.emplace_back(node->getChild(0).get(), 0, nullptr);
                 }
                 break;
             }
             case NODE_KIND::NT_WEIGHT: {
                 out << ":weight ";
                 if (node->getChildrenSize() > 0) {
-                    work_stack.emplace_back(node->getChild(0).get(), 0);
+                    work_stack.emplace_back(node->getChild(0).get(), 0, nullptr);
                 }
                 break;
             }
@@ -925,7 +1455,7 @@ namespace SOMTParser{
                 out << "(tuple";
                 work_stack.emplace_back(nullptr, 2);  // )
                 for (int i = children.size() - 1; i >= 0; i--) {
-                    work_stack.emplace_back(children[i].get(), 0);
+                    work_stack.emplace_back(children[i].get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -944,16 +1474,16 @@ namespace SOMTParser{
                 work_stack.emplace_back(nullptr, 2);  // )
                 // terms: tuple (child 0), then the value for tuple.update
                 if (kind == NODE_KIND::NT_TUPLE_UPDATE && children.size() >= 3) {
-                    work_stack.emplace_back(children[2].get(), 0);
+                    work_stack.emplace_back(children[2].get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 if (!children.empty()) {
-                    work_stack.emplace_back(children[0].get(), 0);
+                    work_stack.emplace_back(children[0].get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 work_stack.emplace_back(")", 4);
                 for (size_t i = nidx; i >= 1; i--) {
-                    work_stack.emplace_back(children[i].get(), 0);
+                    work_stack.emplace_back(children[i].get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -979,9 +1509,12 @@ namespace SOMTParser{
                             break;
                         }
                         work_stack.emplace_back(nullptr, 2);  // close (pat body)
-                        work_stack.emplace_back(children[bi].get(), 0);
+                        // Each case body is a fresh lexical scope containing its
+                        // pattern variables. Pattern syntax itself is metadata,
+                        // never an aliasable term.
+                        work_stack.emplace_back(children[bi].get(), scope_action, nullptr);
                         work_stack.emplace_back(nullptr, 1);
-                        work_stack.emplace_back(children[pi].get(), 0);
+                        work_stack.emplace_back(children[pi].get(), 0, nullptr);
                         work_stack.emplace_back("(", 4);
                         if (ci > 0) {
                             work_stack.emplace_back(nullptr, 1);  // space between cases
@@ -995,7 +1528,11 @@ namespace SOMTParser{
                 }
 
                 work_stack.emplace_back(nullptr, 1);
-                work_stack.emplace_back(children[0].get(), 0);
+                // The scrutinee is an ordinary term in the enclosing scope.
+                // Give it the same lexical sharing plan as any other scope
+                // root; case bodies still get fresh plans under their pattern
+                // binders above.
+                work_stack.emplace_back(children[0].get(), scope_action, active_aliases);
                 work_stack.emplace_back(nullptr, 1);
                 break;
             }
@@ -1006,13 +1543,13 @@ namespace SOMTParser{
                 // If no parameters (size <= 1), output just the name without parentheses
                 const auto& children = node->getChildren();
                 if (children.size() <= 1) {
-                    out << node->getName();
+                    out << smtSymbolImpl(node->getName());
                 } else {
-                    out << "(" << node->getName();
+                    out << "(" << smtSymbolImpl(node->getName());
                     work_stack.emplace_back(nullptr, 2);  // )
                     for (int i = children.size() - 1; i >= 1; i--) {  // Start from 1, not 0
                         auto current_child = children[i].get();
-                        work_stack.emplace_back(current_child, 0);
+                        work_stack.emplace_back(current_child, 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -1033,7 +1570,7 @@ namespace SOMTParser{
                 const auto& children = node->getChildren();
                 for (int i = children.size() - 1; i >= 0; i--) {
                     auto current_child = children[i].get();
-                    work_stack.emplace_back(current_child, 0);
+                    work_stack.emplace_back(current_child, 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -1048,7 +1585,7 @@ namespace SOMTParser{
                 const auto& children = node->getChildren();
                 for (int i = children.size() - 1; i >= 0; i--) {
                     auto current_child = children[i].get();
-                    work_stack.emplace_back(current_child, 0);
+                    work_stack.emplace_back(current_child, 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 break;
@@ -1068,7 +1605,7 @@ namespace SOMTParser{
                 auto child = node->getChild(0).get();
                 out << "(" << kind_str << " ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child, 0);    // child
+                work_stack.emplace_back(child, 0, active_aliases);    // child
                 break;
             }
 
@@ -1077,9 +1614,9 @@ namespace SOMTParser{
                 auto child1 = node->getChild(1).get();
                 out << "(fp.rem ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child1, 0);   // child1
+                work_stack.emplace_back(child1, 0, active_aliases);   // child1
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(child0, 0);   // child0
+                work_stack.emplace_back(child0, 0, active_aliases);   // child0
                 break;
             }
 
@@ -1093,9 +1630,9 @@ namespace SOMTParser{
                 auto child1 = node->getChild(1).get();
                 out << "(" << kind_str << " ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(child1, 0);   // child1
+                work_stack.emplace_back(child1, 0, active_aliases);   // child1
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(child0, 0);   // child0
+                work_stack.emplace_back(child0, 0, active_aliases);   // child0
                 break;
             }
 
@@ -1108,11 +1645,11 @@ namespace SOMTParser{
                 auto size = node->getChild(2).get();
                 out << "((_ " << kind_str << " ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(fp, 0);       // fp
+                work_stack.emplace_back(fp, 0, active_aliases);       // fp
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(rm, 0);       // rm
+                work_stack.emplace_back(rm, 0, active_aliases);       // rm
                 work_stack.emplace_back(nullptr, 3);  // ") "
-                work_stack.emplace_back(size, 0);     // size
+                work_stack.emplace_back(size, 0, active_aliases);     // size
                 break;
             }
 
@@ -1130,7 +1667,9 @@ namespace SOMTParser{
                     // change for lenient backends such as z3/cvc5).
                     {
                         auto fpsort = node->getSort();
-                        if (fpsort && fpsort->isFp()) {
+                        // A symbolic rounding mode is part of the formula. The helper's
+                        // default RNE is not a valid replacement for that variable.
+                        if (fpsort && fpsort->isFp() && node->getChild(2)->isCRoundingMode()) {
                             auto num = constToNumber(node->getChild(3));
                             if (num) {
                                 mpfr_rnd_t rnd = FloatingPointUtils::getFPRoundingModeMpfr(node->getChild(2));
@@ -1145,23 +1684,23 @@ namespace SOMTParser{
                     auto param = node->getChild(3).get();
                     out << "((_ to_fp ";
                     work_stack.emplace_back(nullptr, 2);  // )
-                    work_stack.emplace_back(param, 0);    // param
+                    work_stack.emplace_back(param, 0, active_aliases);    // param
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(rm, 0);       // rm
+                    work_stack.emplace_back(rm, 0, active_aliases);       // rm
                     work_stack.emplace_back(nullptr, 3);  // ") "
-                    work_stack.emplace_back(sb, 0);       // sb
+                    work_stack.emplace_back(sb, 0, active_aliases);       // sb
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(eb, 0);       // eb
+                    work_stack.emplace_back(eb, 0, active_aliases);       // eb
                 } else if(node->getChildrenSize() == 3) {
                     // 3-parameter version: ((_ to_fp eb sb) param)
                     auto param = node->getChild(2).get();
                     out << "((_ to_fp ";
                     work_stack.emplace_back(nullptr, 2);  // )
-                    work_stack.emplace_back(param, 0);    // param
+                    work_stack.emplace_back(param, 0, active_aliases);    // param
                     work_stack.emplace_back(nullptr, 3);  // ") "
-                    work_stack.emplace_back(sb, 0);       // sb
+                    work_stack.emplace_back(sb, 0, active_aliases);       // sb
                     work_stack.emplace_back(nullptr, 1);  // space
-                    work_stack.emplace_back(eb, 0);       // eb
+                    work_stack.emplace_back(eb, 0, active_aliases);       // eb
                 } else {
                     // Invalid number of children
                     out << "INVALID_FP_TO_FP_NODE";
@@ -1176,13 +1715,13 @@ namespace SOMTParser{
                 auto param = node->getChild(3).get();
                 out << "((_ to_fp_unsigned ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(param, 0);    // param
+                work_stack.emplace_back(param, 0, active_aliases);    // param
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(rm, 0);       // rm
+                work_stack.emplace_back(rm, 0, active_aliases);       // rm
                 work_stack.emplace_back(nullptr, 3);  // ") "
-                work_stack.emplace_back(sb, 0);       // sb
+                work_stack.emplace_back(sb, 0, active_aliases);       // sb
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(eb, 0);       // eb
+                work_stack.emplace_back(eb, 0, active_aliases);       // eb
                 break;
             }
 
@@ -1191,7 +1730,7 @@ namespace SOMTParser{
                 size_t nbits = node->getSort()->getBitWidth();
                 out << "((_ fp.to_ieee_bv " << nbits << ") ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(param, 0);    // param
+                work_stack.emplace_back(param, 0, active_aliases);    // param
                 break;
             }
 
@@ -1200,9 +1739,9 @@ namespace SOMTParser{
                 auto index = node->getChild(1).get();
                 out << "(root-obj ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(index, 0);    // index
+                work_stack.emplace_back(index, 0, active_aliases);    // index
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(expr, 0);     // expr
+                work_stack.emplace_back(expr, 0, active_aliases);     // expr
                 break;
             }
 
@@ -1217,11 +1756,11 @@ namespace SOMTParser{
                 work_stack.emplace_back(nullptr, 2);  // )
                 
                 // 2. Push upper bound
-                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 1).get(), 0);
+                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 1).get(), 0, active_aliases);
                 work_stack.emplace_back(nullptr, 1);  // space
                 
                 // 3. Push lower bound
-                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 2).get(), 0);
+                work_stack.emplace_back(node->getChild(node->getChildrenSize() - 2).get(), 0, active_aliases);
                 work_stack.emplace_back(nullptr, 1);  // space
                 
                 // 4. Push closing parenthesis for coeffs list
@@ -1229,7 +1768,7 @@ namespace SOMTParser{
                 
                 // 5. Push coefficients in reverse order (so they print in correct order)
                 for(int i = node->getChildrenSize() - 3; i >= 0; i--) {
-                    work_stack.emplace_back(node->getChild(i).get(), 0);
+                    work_stack.emplace_back(node->getChild(i).get(), 0, active_aliases);
                     work_stack.emplace_back(nullptr, 1);  // space
                 }
                 
@@ -1251,12 +1790,12 @@ namespace SOMTParser{
                 work_stack.emplace_back(nullptr, 2);  // )
                 
                 // 3. Push upper bound
-                work_stack.emplace_back(node->getChild(2).get(), 0);
+                work_stack.emplace_back(node->getChild(2).get(), 0, active_aliases);
                 work_stack.emplace_back(nullptr, 1);  // space
                 work_stack.emplace_back(",", 4);  // ','
                 
                 // 4. Push lower bound
-                work_stack.emplace_back(node->getChild(1).get(), 0);
+                work_stack.emplace_back(node->getChild(1).get(), 0, active_aliases);
                 work_stack.emplace_back(nullptr, 1);  // space
                 
                 // 5. Push opening parenthesis for interval
@@ -1267,7 +1806,7 @@ namespace SOMTParser{
                 work_stack.emplace_back(",", 4);  // ','
                 
                 // 7. Push polynomial
-                work_stack.emplace_back(node->getChild(0).get(), 0);
+                work_stack.emplace_back(node->getChild(0).get(), 0, active_aliases);
                 
                 break;
             }
@@ -1279,9 +1818,9 @@ namespace SOMTParser{
                 auto index = node->getChild(1).get();
                 out << "(select ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(index, 0);    // index
+                work_stack.emplace_back(index, 0, active_aliases);    // index
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(array, 0);    // array
+                work_stack.emplace_back(array, 0, active_aliases);    // array
                 break;
             }
 
@@ -1293,32 +1832,32 @@ namespace SOMTParser{
                 auto value = node->getChild(2).get();
                 out << "(store ";
                 work_stack.emplace_back(nullptr, 2);  // )
-                work_stack.emplace_back(value, 0);    // value
+                work_stack.emplace_back(value, 0, active_aliases);    // value
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(index, 0);    // index
+                work_stack.emplace_back(index, 0, active_aliases);    // index
                 work_stack.emplace_back(nullptr, 1);  // space
-                work_stack.emplace_back(array, 0);    // array
+                work_stack.emplace_back(array, 0, active_aliases);    // array
                 break;
             }
 
             default: {
                 // Fallback for other cases - iterative version
                 std::string kind_str = kindToString(kind);
-                const auto& children = node->getChildren();
+                const auto children = shared_ordered_children(node, active_aliases);
 
                 if (children.empty()) {
                     out << kind_str;
                 } else if (children.size() == 1) {
-                    auto child = children[0].get();
+                    auto child = children[0];
                     out << "(" << kind_str << " ";
                     work_stack.emplace_back(nullptr, 2);  // )
-                    work_stack.emplace_back(child, 0);    // child
+                    work_stack.emplace_back(child, 0, active_aliases);    // child
                 } else {
                     out << "(" << kind_str;
                     work_stack.emplace_back(nullptr, 2);  // )
-                    for (int i = children.size() - 1; i >= 0; i--) {
-                        auto child = children[i].get();
-                        work_stack.emplace_back(child, 0);
+                    for (int i = static_cast<int>(children.size()) - 1; i >= 0; i--) {
+                        auto child = children[static_cast<std::size_t>(i)];
+                        work_stack.emplace_back(child, 0, active_aliases);
                         work_stack.emplace_back(nullptr, 1);  // space
                     }
                 }
@@ -1328,10 +1867,19 @@ namespace SOMTParser{
         }
     }
 
-    // Wrapper function that returns string for compatibility
+    void dumpSMTLIB2(const std::shared_ptr<DAGNode>& root, std::ostream& out) {
+        dumpSMTLIB2_streaming(root.get(), out);  // ordinary output walks the full term
+        if (!out) {
+            throw std::runtime_error("dumpSMTLIB2: failed while writing SMT-LIB expression");
+        }
+    }
+
+    // Compatibility wrapper. Checking the intermediate stream is essential:
+    // std::ostringstream can enter badbit after an allocation/write failure,
+    // and str() would otherwise return a syntactically incomplete prefix.
     std::string dumpSMTLIB2(const std::shared_ptr<DAGNode>& root) {
         std::ostringstream oss;
-        dumpSMTLIB2_streaming(root.get(), oss);  // enable cache by default
+        dumpSMTLIB2(root, oss);
         return oss.str();
     }
 
@@ -1339,41 +1887,84 @@ namespace SOMTParser{
         if(print_hash_computed) {
             return static_cast<std::size_t>(cached_print_hash);
         }
-        // const_cast is safe: the printer only reads. Its parameter is
-        // non-const because its internal work stack holds DAGNode*.
-        PrintHashBuf buf;
-        std::ostream os(&buf);
-        dumpSMTLIB2_streaming(const_cast<DAGNode*>(this), os, &buf);
-        cached_print_hash = buf.hash();
-        cached_print_len = buf.length();
-        print_hash_computed = true;
+        // Populate children first even if nobody has requested their order
+        // keys yet. Merely reusing *existing* caches expands a shared chain
+        // exponentially on its first comparison (for example a nested max
+        // used as an equality operand). The rolling hash composes the exact
+        // same canonical bytes while visiting each DAG node only once.
+        std::vector<std::pair<DAGNode*, bool>> pending{
+            {const_cast<DAGNode*>(this), false}};
+        while (!pending.empty()) {
+            const auto item = pending.back();
+            pending.pop_back();
+            DAGNode* node = item.first;
+            if (!node || node->print_hash_computed) { continue; }
+            if (!item.second) {
+                pending.emplace_back(node, true);
+                const auto& children = node->getChildren();
+                for (auto it = children.rbegin(); it != children.rend(); ++it) {
+                    if (*it && !(*it)->print_hash_computed) {
+                        pending.emplace_back(it->get(), false);
+                    }
+                }
+                continue;
+            }
+            PrintHashBuf buf;
+            std::ostream os(&buf);
+            dumpSMTLIB2_streaming(node, os, &buf);
+            node->cached_print_hash = buf.hash();
+            node->cached_print_len = buf.length();
+            node->print_hash_computed = true;
+        }
         return static_cast<std::size_t>(cached_print_hash);
     }
 
     
-    std::string dumpFuncDef(const std::shared_ptr<DAGNode>& node){
-        std::string res = "(define-fun " + node->getName() + " (";
+    void dumpSMTLIB2Shared(const std::shared_ptr<DAGNode>& node, std::ostream& out) {
+        dumpSMTLIB2_streaming(node.get(), out, nullptr, nullptr, true);
+        if (!out) {
+            throw std::runtime_error("dumpSMTLIB2Shared: failed while writing SMT-LIB expression");
+        }
+    }
+
+    void dumpFuncDef(const std::shared_ptr<DAGNode>& node, std::ostream& out){
+        out << "(define-fun " << smtSymbolImpl(node->getName()) << " (";
         // For NT_FUNC_DEF, children[0] is body, children[1..n] are parameters
         for(size_t i=1;i<node->getChildrenSize();i++){
-            if(i==1) res += "(" + node->getChild(i)->getName() +" " + node->getChild(i)->getSort()->toString() +")";
-            else res += " (" + node->getChild(i)->getName() +" " + node->getChild(i)->getSort()->toString() +")";
+            if(i!=1) out << " ";
+            out << "(" << smtSymbolImpl(node->getChild(i)->getName()) << " "
+                << node->getChild(i)->getSort()->toString() << ")";
         }
         // Use node's declared sort, not body's inferred sort (which may be widened to IntOrReal)
-        res += ") " + node->getSort()->toString() + " ";
-        res += dumpSMTLIB2(node->getChild(0)) +  ")";
-        return res;
+        out << ") " << node->getSort()->toString() << " ";
+        dumpSMTLIB2_streaming(node->getChild(0).get(), out, nullptr, nullptr, true, node.get());
+        out << ")";
+        if (!out) throw std::runtime_error("dumpFuncDef: failed while writing SMT-LIB function");
     }
-    std::string dumpFuncRec(const std::shared_ptr<DAGNode>& node){
-        std::string res = "(define-fun-rec " + node->getName() + " (";
+    std::string dumpFuncDef(const std::shared_ptr<DAGNode>& node){
+        std::ostringstream out;
+        dumpFuncDef(node, out);
+        return out.str();
+    }
+
+    void dumpFuncRec(const std::shared_ptr<DAGNode>& node, std::ostream& out){
+        out << "(define-fun-rec " << smtSymbolImpl(node->getName()) << " (";
         // For NT_FUNC_REC, children[0] is body, children[1..n] are parameters
         for(size_t i=1;i<node->getChildrenSize();i++){
-            if(i==1) res += "(" + node->getChild(i)->getName() +" " + node->getChild(i)->getSort()->toString() +")";
-            else res += " (" + node->getChild(i)->getName() +" " + node->getChild(i)->getSort()->toString() +")";
+            if(i!=1) out << " ";
+            out << "(" << smtSymbolImpl(node->getChild(i)->getName()) << " "
+                << node->getChild(i)->getSort()->toString() << ")";
         }
         // Use node's declared sort, not body's inferred sort (which may be widened to IntOrReal)
-        res += ") " + node->getSort()->toString() + " ";
-        res += dumpSMTLIB2(node->getChild(0)) +  ")";
-        return res;
+        out << ") " << node->getSort()->toString() << " ";
+        dumpSMTLIB2_streaming(node->getChild(0).get(), out, nullptr, nullptr, true, node.get());
+        out << ")";
+        if (!out) throw std::runtime_error("dumpFuncRec: failed while writing SMT-LIB function");
+    }
+    std::string dumpFuncRec(const std::shared_ptr<DAGNode>& node){
+        std::ostringstream out;
+        dumpFuncRec(node, out);
+        return out.str();
     }
     // (define-funs-rec ((f (params) sort) ...) (body ...))
     //
@@ -1381,41 +1972,52 @@ namespace SOMTParser{
     // call each other, so a sequence of define-fun-rec commands would refer to
     // a function that the script has not defined yet.  SMT-LIB puts all the
     // signatures first precisely so every body can see every name.
-    std::string dumpFuncsRec(const std::vector<std::shared_ptr<DAGNode>>& nodes){
+    void dumpFuncsRec(const std::vector<std::shared_ptr<DAGNode>>& nodes, std::ostream& out){
         condAssert(!nodes.empty(), "dumpFuncsRec: empty group");
-        std::string res = "(define-funs-rec (";
+        out << "(define-funs-rec (";
         for(size_t n = 0; n < nodes.size(); n++){
             const auto& node = nodes[n];
             condAssert(node != nullptr, "dumpFuncsRec: null member");
-            if(n != 0) res += " ";
-            res += "(" + node->getName() + " (";
+            if(n != 0) out << " ";
+            out << "(" << smtSymbolImpl(node->getName()) << " (";
             // children[0] is the body, children[1..n] are the parameters.
             for(size_t i = 1; i < node->getChildrenSize(); i++){
-                if(i != 1) res += " ";
-                res += "(" + node->getChild(i)->getName() + " " +
-                       node->getChild(i)->getSort()->toString() + ")";
+                if(i != 1) out << " ";
+                out << "(" << smtSymbolImpl(node->getChild(i)->getName()) << " "
+                    << node->getChild(i)->getSort()->toString() << ")";
             }
-            res += ") " + node->getSort()->toString() + ")";
+            out << ") " << node->getSort()->toString() << ")";
         }
-        res += ") (";
+        out << ") (";
         for(size_t n = 0; n < nodes.size(); n++){
-            if(n != 0) res += " ";
-            res += dumpSMTLIB2(nodes[n]->getChild(0));
+            if(n != 0) out << " ";
+            dumpSMTLIB2(nodes[n]->getChild(0), out);
         }
-        res += "))";
-        return res;
+        out << "))";
+        if (!out) throw std::runtime_error("dumpFuncsRec: failed while writing SMT-LIB functions");
     }
 
-    std::string dumpFuncDec(const std::shared_ptr<DAGNode>& node){
-        std::string res = "(declare-fun " + node->getName() + " (";
+    std::string dumpFuncsRec(const std::vector<std::shared_ptr<DAGNode>>& nodes){
+        std::ostringstream out;
+        dumpFuncsRec(nodes, out);
+        return out.str();
+    }
+
+    void dumpFuncDec(const std::shared_ptr<DAGNode>& node, std::ostream& out){
+        out << "(declare-fun " << smtSymbolImpl(node->getName()) << " (";
         // For NT_FUNC_DEC, children[0] is NULL_NODE, children[1..n] are parameter type nodes
         for(size_t i=1;i<node->getChildrenSize();i++){
-            if(i==1) res += node->getChild(i)->getSort()->toString();
-            else res += " " + node->getChild(i)->getSort()->toString();
+            if(i!=1) out << " ";
+            out << node->getChild(i)->getSort()->toString();
         }
         // The return type is stored in the node's sort, not in children[0]
-        res += ") " + node->getSort()->toString() + ")";
-        return res;
+        out << ") " << node->getSort()->toString() << ")";
+        if (!out) throw std::runtime_error("dumpFuncDec: failed while writing SMT-LIB declaration");
+    }
+    std::string dumpFuncDec(const std::shared_ptr<DAGNode>& node){
+        std::ostringstream out;
+        dumpFuncDec(node, out);
+        return out.str();
     }
 
     // NodeManager
@@ -1466,8 +2068,60 @@ namespace SOMTParser{
     }
 
     void NodeManager::clear() {
-        // Drop manager ownership, preserving nodes retained by query handles.
-        // Destructive node->clear() invalidated DAGs shared with other users.
+        // Unlink non-static nodes so that (a) destruction never recurses deeply
+        // through long child chains and (b) recursive-function definitions
+        // (which form reference cycles) cannot leak. Nodes that are still
+        // referenced from outside the manager (API users, language bindings)
+        // are preserved together with their whole subtree, so external holders
+        // never observe a cleared node.
+        //
+        // Internal owners of every managed node are exactly:
+        //   1 x nodes vector + 1 x bucket entry + one per parent child-link.
+        std::unordered_map<const DAGNode*, size_t> internal_refs;
+        internal_refs.reserve(nodes.size());
+        for (size_t i = static_node_count; i < nodes.size(); i++) {
+            internal_refs[nodes[i].get()] += 2; // nodes vector + bucket entry
+        }
+        // Borrow child vectors during this read-only traversal. Copying them
+        // allocates storage proportional to fanout while we are freeing a DAG.
+        for (size_t i = static_node_count; i < nodes.size(); i++) {
+            for (const auto& child : nodes[i]->children) {
+                auto it = internal_refs.find(child.get());
+                if (it != internal_refs.end()) it->second += 1;
+            }
+        }
+
+        // Roots referenced from outside; keep their whole subtrees intact.
+        // Mark before enqueueing so a wide node with repeated child links
+        // needs work-list space only for distinct nodes, not every edge.
+        std::unordered_set<const DAGNode*> keep;
+        std::vector<const DAGNode*> stack;
+        for (size_t i = static_node_count; i < nodes.size(); i++) {
+            const size_t uc = static_cast<size_t>(nodes[i].use_count());
+            auto it = internal_refs.find(nodes[i].get());
+            if (it != internal_refs.end() && uc > it->second
+                && keep.insert(nodes[i].get()).second) {
+                stack.push_back(nodes[i].get());
+            }
+        }
+        while (!stack.empty()) {
+            const DAGNode* n = stack.back();
+            stack.pop_back();
+            for (const auto& child : n->children) {
+                if (keep.insert(child.get()).second) {
+                    stack.push_back(child.get());
+                }
+            }
+        }
+
+        for (size_t i = static_node_count; i < nodes.size(); i++) {
+            if (keep.find(nodes[i].get()) == keep.end()) {
+                nodes[i]->clear();
+            }
+        }
+        nodes.clear();
+
+        // Clear hash buckets and re-insert static nodes
         for (auto& bucket : node_buckets) {
             bucket.clear();
         }

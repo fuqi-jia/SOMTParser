@@ -26,9 +26,43 @@
  */
 
 #include "somtparser/frontend/parser.h"
+#include <array>
 #include <stack>
 
 namespace SOMTParser {
+
+    namespace {
+    using ConversionNode = std::shared_ptr<DAGNode>;
+    using ConversionCache = std::unordered_map<ConversionNode, ConversionNode>;
+
+    // Dependencies are materialized once per frame. Finishing a node only
+    // reads completed children; no rule re-enters the traversal.
+    template<class Dependencies, class Finish>
+    ConversionNode conversionPostorder(const ConversionNode& root, ConversionCache& cache,
+                                        Dependencies dependencies, Finish finish) {
+        struct Frame { ConversionNode node; std::vector<ConversionNode> children; size_t next = 0; };
+        if(cache.count(root)) return cache.at(root);
+        std::vector<Frame> pending{{root, dependencies(root)}};
+        std::unordered_set<const DAGNode*> active{root.get()};
+        while(!pending.empty()) {
+            auto& frame = pending.back();
+            if(frame.next < frame.children.size()) {
+                auto child = frame.children[frame.next++];
+                if(cache.count(child)) continue;
+                condAssert(child && active.insert(child.get()).second,
+                           "cyclic or null expression in conversion");
+                pending.push_back({child, dependencies(child)});
+                continue;
+            }
+            auto node = frame.node;
+            cache[node] = finish(node);
+            active.erase(node.get());
+            pending.pop_back();
+        }
+        return cache.at(root);
+    }
+    }
+
 
     void Parser::collectAtoms(std::shared_ptr<DAGNode> expr, std::unordered_set<std::shared_ptr<DAGNode>>& atoms) {
         std::unordered_set<std::shared_ptr<DAGNode>> visited;
@@ -43,19 +77,13 @@ namespace SOMTParser {
     }
 
     void Parser::collectAtoms(std::shared_ptr<DAGNode> expr, std::unordered_set<std::shared_ptr<DAGNode>>& atoms, std::unordered_set<std::shared_ptr<DAGNode>>& visited) {
-        if (visited.find(expr) != visited.end()) {
-            return;
-        }
-        visited.insert(expr);
-        if (expr->isAtom()) {
-            // directly insert the atom and return
-            atoms.insert(expr);
-            return;
-        }
-        else{
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                collectAtoms(expr->getChild(i), atoms, visited);
-            }
+        std::vector<ConversionNode> pending{expr};
+        while(!pending.empty()) {
+            auto node = std::move(pending.back()); pending.pop_back();
+            if(!visited.insert(node).second) continue;
+            if(node->isAtom()) { atoms.insert(node); continue; }
+            const size_t count = node->getChildrenSize();
+            for(size_t i = count; i > 0; --i) pending.push_back(node->getChild(i - 1));
         }
     }
     void Parser::collectGroundAtoms(std::vector<std::shared_ptr<DAGNode>> exprs, std::unordered_set<std::shared_ptr<DAGNode>>& atoms) {
@@ -73,21 +101,14 @@ namespace SOMTParser {
         }
     }
     void Parser::collectGroundAtoms(std::shared_ptr<DAGNode> expr, std::unordered_set<std::shared_ptr<DAGNode>>& atoms, std::unordered_set<std::shared_ptr<DAGNode>>& visited) {
-        if(visited.find(expr) != visited.end()){
-            return;
-        }
-        visited.insert(expr);
-        if(expr->isAtom()){
-            atoms.insert(expr);
-            return;
-        }
-        else if(expr->isAnd()){
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                collectGroundAtoms(expr->getChild(i), atoms, visited);
-            }
-        }
-        else{
-            // TODO: handle the other cases
+        std::vector<ConversionNode> pending{expr};
+        while(!pending.empty()) {
+            auto node = std::move(pending.back()); pending.pop_back();
+            if(!visited.insert(node).second) continue;
+            if(node->isAtom()) { atoms.insert(node); continue; }
+            if(!(node->isAnd() || node->isOr() || node->isNot())) continue;
+            const size_t count = node->getChildrenSize();
+            for(size_t i = count; i > 0; --i) pending.push_back(node->getChild(i - 1));
         }
     }
 
@@ -162,21 +183,14 @@ namespace SOMTParser {
     }
 
     void Parser::collectVars(std::shared_ptr<DAGNode> expr, std::unordered_set<std::shared_ptr<DAGNode>>& vars, std::unordered_set<std::shared_ptr<DAGNode>>& visited) {
-        if (visited.find(expr) != visited.end()) {
-            return;
-        }
-        visited.insert(expr);
-        if (expr->isVar() && !expr->isLetBindVar()) {
-            vars.insert(expr);
-        }
-        else if (expr->isLetBindVar()) {
-            if (expr->getChildrenSize() >= 1)
-                collectVars(expr->getChild(0), vars, visited);
-        }
-        else{
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                collectVars(expr->getChild(i), vars, visited);
-            }
+        std::vector<ConversionNode> pending{expr};
+        while(!pending.empty()) {
+            auto node = std::move(pending.back()); pending.pop_back();
+            if(!visited.insert(node).second) continue;
+            if(node->isVar() && !node->isLetBindVar()) { vars.insert(node); continue; }
+            const size_t count = node->isLetBindVar()
+                ? std::min<size_t>(1, node->getChildrenSize()) : node->getChildrenSize();
+            for(size_t i = count; i > 0; --i) pending.push_back(node->getChild(i - 1));
         }
     }
 
@@ -193,21 +207,17 @@ namespace SOMTParser {
     }
 
     void Parser::collectAssignableVars(std::shared_ptr<DAGNode> expr, std::unordered_set<std::shared_ptr<DAGNode>>& vars, std::unordered_set<std::shared_ptr<DAGNode>>& visited) {
-        if (visited.find(expr) != visited.end()) {
-            return;
-        }
-        visited.insert(expr);
-        if (expr->isAssignableVar()) {
-            vars.insert(expr);
-        }
-        else{
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                collectAssignableVars(expr->getChild(i), vars, visited);
-            }
+        std::vector<ConversionNode> pending{expr};
+        while(!pending.empty()) {
+            auto node = std::move(pending.back()); pending.pop_back();
+            if(!visited.insert(node).second) continue;
+            if(node->isAssignableVar()) { vars.insert(node); continue; }
+            const size_t count = node->getChildrenSize();
+            for(size_t i = count; i > 0; --i) pending.push_back(node->getChild(i - 1));
         }
     }
 
-    
+
     std::shared_ptr<DAGNode> Parser::replaceAtoms(std::shared_ptr<DAGNode> expr, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& atom_map) {
         std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>> visited;
         bool is_changed = false;
@@ -219,31 +229,23 @@ namespace SOMTParser {
     }
 
     std::shared_ptr<DAGNode> Parser::replaceAtoms(std::shared_ptr<DAGNode> expr, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& atom_map, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited, bool& is_changed) {
-        if (visited.find(expr) != visited.end()) {
-            return visited[expr];
-        }
-        if (expr->isAtom() && atom_map.find(expr) != atom_map.end()) {
-            is_changed = true;
-            visited[expr] = atom_map[expr];
-            return atom_map[expr];
-        }
-        std::vector<std::shared_ptr<DAGNode>> children;
-        for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-            bool child_is_changed = false;
-            std::shared_ptr<DAGNode> child_expr = replaceAtoms(expr->getChild(i), atom_map, visited, child_is_changed);
-            if (child_is_changed) {
-                is_changed = true;
+        const auto dependencies = [&](const ConversionNode& node) {
+            return (node->isAtom() && atom_map.count(node)) ? std::vector<ConversionNode>{} : node->getChildren();
+        };
+        const auto finish = [&](const ConversionNode& node) {
+            if(node->isAtom() && atom_map.count(node)) return atom_map.at(node);
+            bool changed = false;
+            std::vector<ConversionNode> children;
+            for(const auto& child : node->getChildren()) {
+                auto replacement = visited.at(child);
+                changed |= replacement != child;
+                children.push_back(std::move(replacement));
             }
-            children.emplace_back(child_expr);
-        }
-        if (is_changed) {
-            std::shared_ptr<DAGNode> new_expr = mkOper(expr->getSort(), expr->getKind(), children);
-            visited[expr] = new_expr;
-            return new_expr;
-        }
-        condAssert(!is_changed, "replaceAtoms: is_changed is true");
-        visited[expr] = expr;
-        return expr;
+            return changed ? mkOper(node->getSort(), node->getKind(), children) : node;
+        };
+        auto result = conversionPostorder(expr, visited, dependencies, finish);
+        is_changed |= result != expr;
+        return result;
     }
 
     std::shared_ptr<DAGNode> Parser::replaceNodes(std::shared_ptr<DAGNode> expr, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& node_map) {
@@ -257,31 +259,23 @@ namespace SOMTParser {
     }
 
     std::shared_ptr<DAGNode> Parser::replaceNodes(std::shared_ptr<DAGNode> expr, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& node_map, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited, bool& is_changed) {
-        if (visited.find(expr) != visited.end()) {
-            return visited[expr];
-        }
-        if (node_map.find(expr) != node_map.end()) {
-            is_changed = true;
-            visited[expr] = node_map[expr];
-            return node_map[expr];
-        }
-        std::vector<std::shared_ptr<DAGNode>> children;
-        for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-            bool child_is_changed = false;
-            std::shared_ptr<DAGNode> child_expr = replaceNodes(expr->getChild(i), node_map, visited, child_is_changed);
-            if (child_is_changed) {
-                is_changed = true;
+        const auto dependencies = [&](const ConversionNode& node) {
+            return (node_map.count(node)) ? std::vector<ConversionNode>{} : node->getChildren();
+        };
+        const auto finish = [&](const ConversionNode& node) {
+            if(node_map.count(node)) return node_map.at(node);
+            bool changed = false;
+            std::vector<ConversionNode> children;
+            for(const auto& child : node->getChildren()) {
+                auto replacement = visited.at(child);
+                changed |= replacement != child;
+                children.push_back(std::move(replacement));
             }
-            children.emplace_back(child_expr);
-        }
-        if (is_changed) {
-            std::shared_ptr<DAGNode> new_expr = mkOper(expr->getSort(), expr->getKind(), children);
-            visited[expr] = new_expr;
-            return new_expr;
-        }
-        condAssert(!is_changed, "replaceNodes: is_changed is true");
-        visited[expr] = expr;
-        return expr;
+            return changed ? mkOper(node->getSort(), node->getKind(), children) : node;
+        };
+        auto result = conversionPostorder(expr, visited, dependencies, finish);
+        is_changed |= result != expr;
+        return result;
     }
 
     std::shared_ptr<DAGNode> Parser::toTseitinCNF(std::shared_ptr<DAGNode> expr, std::vector<std::shared_ptr<DAGNode>>& clauses) {
@@ -326,331 +320,375 @@ namespace SOMTParser {
     // auxiliary function: handle the equivalence relation between two boolean variables
     std::shared_ptr<DAGNode> Parser::toTseitinEq(std::shared_ptr<DAGNode> a, std::shared_ptr<DAGNode> b, std::vector<std::shared_ptr<DAGNode>>& clauses) {
         std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-        
+
         // c <-> (a <-> b) -> c -> (a <-> b) and (a <-> b) -> c
         // => (¬c or a or ¬b) and (¬c or ¬a or b) and (c or a or b) and (c or ¬a or ¬b)
-        
+
         // add clause: (¬c ∨ a ∨ ¬b) - when a is false or b is true, c can be false
         clauses.emplace_back(mkOr({mkNot(c), a, mkNot(b)}));
-        
+
         // add clause: (¬c ∨ ¬a ∨ b) - when a is true or b is false, c can be false
         clauses.emplace_back(mkOr({mkNot(c), mkNot(a), b}));
-        
+
         // add clause: (c ∨ a ∨ b) - when a and b are both false, c must be true
         clauses.emplace_back(mkOr({c, a, b}));
-        
+
         // add clause: (c ∨ ¬a ∨ ¬b) - when a and b are both true, c must be true
         clauses.emplace_back(mkOr({c, mkNot(a), mkNot(b)}));
-        
+
         return c;
     }
 
     // auxiliary function: handle the inequality relation between two boolean variables
     std::shared_ptr<DAGNode> Parser::toTseitinDistinct(std::shared_ptr<DAGNode> a, std::shared_ptr<DAGNode> b, std::vector<std::shared_ptr<DAGNode>>& clauses) {
         std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-        
+
         // c <-> (a != b) -> c -> (a != b)
         // => (¬c or a or b) and (¬c or ¬a or ¬b) and (c or ¬a or b) and (c or a or ¬b)
-        
+
         // add clause: (¬c ∨ a ∨ b) - when a and b are both false, c can be false
         clauses.emplace_back(mkOr({mkNot(c), a, b}));
-        
+
         // add clause: (¬c ∨ ¬a ∨ ¬b) - when a and b are both true, c can be false
         clauses.emplace_back(mkOr({mkNot(c), mkNot(a), mkNot(b)}));
-        
+
         // add clause: (c ∨ ¬a ∨ b) - when a is true and b is false, c must be true
         clauses.emplace_back(mkOr({c, mkNot(a), b}));
-        
+
         // add clause: (c ∨ a ∨ ¬b) - when a is false and b is true, c must be true
         clauses.emplace_back(mkOr({c, a, mkNot(b)}));
-        
+
         return c;
     }
     std::shared_ptr<DAGNode> Parser::toTseitinCNF(std::shared_ptr<DAGNode> expr, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited, std::vector<std::shared_ptr<DAGNode>>& clauses) {
-        // Tseitin CNF is ¬applied to atoms: all atoms are already in CNF form
-        if(expr->isAtom()){
-            auto atom_it = cnf_map.find(expr);
-            if(atom_it != cnf_map.end()){
-                return atom_it->second;
+        ConversionCache expanded;
+        const auto dependencies = [&](const ConversionNode& node) {
+            if(node->isAtom() || node->isLiteral() || node->isTempVar()) return std::vector<ConversionNode>{};
+            if(node->isLet()) {
+                expanded[node] = expandLet(node);
+                return std::vector<ConversionNode>{expanded.at(node)};
             }
-            // Standalone toTseitinCNF call (outside the toCNF pipeline): the
-            // atom has not been abstracted yet, so register a fresh Boolean
-            // abstraction variable on the fly, mirroring the bookkeeping done
-            // in toCNF. Returning cnf_map[expr] blindly would hand out a null
-            // node in release builds.
-            std::shared_ptr<DAGNode> new_var = mkTempVar(SortManager::BOOL_SORT);
-            std::shared_ptr<DAGNode> not_atom = mkNot(expr);
-            std::shared_ptr<DAGNode> not_new_var = mkNot(new_var);
-            cnf_map[expr] = new_var;
-            cnf_map[not_atom] = not_new_var;
-            cnf_atom_map[new_var] = expr;
-            cnf_bool_var_map[expr] = new_var;
-            cnf_atom_map[not_new_var] = not_atom;
-            cnf_bool_var_map[not_atom] = not_new_var;
-            return new_var;
-        }
-        if(expr->isLiteral() || expr->isTempVar()) {
-            // always return the original expression
-            // and no need to add to visited
+            return node->getChildren();
+        };
+        const auto completed = [&](const ConversionNode& node) { return visited.at(node); };
+        const auto finish = [&](const ConversionNode& expr) -> ConversionNode {
+
+            // Tseitin CNF is ¬applied to atoms: all atoms are already in CNF form
+            if(expr->isAtom()){
+                auto atom_it = cnf_map.find(expr);
+                if(atom_it != cnf_map.end()){
+                    return atom_it->second;
+                }
+                // Standalone toTseitinCNF call (outside the toCNF pipeline): the
+                // atom has not been abstracted yet, so register a fresh Boolean
+                // abstraction variable on the fly, mirroring the bookkeeping done
+                // in toCNF. Returning cnf_map[expr] blindly would hand out a null
+                // node in release builds.
+                std::shared_ptr<DAGNode> new_var = mkTempVar(SortManager::BOOL_SORT);
+                std::shared_ptr<DAGNode> not_atom = mkNot(expr);
+                std::shared_ptr<DAGNode> not_new_var = mkNot(new_var);
+                cnf_map[expr] = new_var;
+                cnf_map[not_atom] = not_new_var;
+                cnf_atom_map[new_var] = expr;
+                cnf_bool_var_map[expr] = new_var;
+                cnf_atom_map[not_new_var] = not_atom;
+                cnf_bool_var_map[not_atom] = not_new_var;
+                return new_var;
+            }
+            if(expr->isLiteral() || expr->isTempVar()) {
+                // always return the original expression
+                // and no need to add to visited
+                return expr;
+            }
+            if (visited.find(expr) != visited.end()) {
+                return visited[expr];
+            }
+
+            if(expr->isLet()){
+                std::shared_ptr<DAGNode> result = completed(expanded.at(expr));
+                visited[expr] = result;
+                return result;
+            }
+            // c <-> ¬a <=> c -> ¬a and ¬a -> c
+            // => ¬c or ¬a
+            // => a or c
+            if(expr->isNot()){
+                // Convert the child first so that clauses only ever reference
+                // literals / abstraction variables (the child may be an atom or a
+                // nested formula when toTseitinCNF is called outside toCNF).
+                std::shared_ptr<DAGNode> a = completed(expr->getChild(0));
+                std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
+                clauses.emplace_back(mkOr({mkNot(c), mkNot(a)}));
+                clauses.emplace_back(mkOr({a, c}));
+                visited[expr] = c;
+                return c;
+            }
+            // a and b and ... <=> c <-> a and b and ...
+            // => c -> a and b and ... => ¬c or a and b and ... => (¬c or a) and (¬c or b) and ...
+            // => a and b and ... -> c => ¬a or ¬b or ... or c
+            else if (expr->isAnd()) {
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for (size_t i = 0; i < expr->getChildrenSize(); i++) {
+                    std::shared_ptr<DAGNode> child_cnf = completed(expr->getChild(i));
+                    children.emplace_back(child_cnf);
+                }
+                if(children.size() == 1){
+                    // return the only child, which is a temp var or boolean variable
+                    condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
+                    return children[0];
+                }
+                // Two-sided, and that is what preserves the MODEL COUNT rather
+                // than merely satisfiability: `c → childᵢ` and `(⋀ childᵢ) → c`
+                // together make the auxiliary functionally determined by the
+                // originals, so each source model extends to exactly one target
+                // model. A one-sided (Plaisted-Greenbaum) encoding would emit only
+                // the first half, stay equisatisfiable, and multiply the number of
+                // models -- a difference no satisfiability test can observe, so it
+                // has to be measured by counting.
+                std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
+                std::vector<std::shared_ptr<DAGNode>> or_children;
+                for(auto& child : children) {
+                    clauses.emplace_back(mkOr({mkNot(c), child}));
+                    or_children.emplace_back(mkNot(child));
+                }
+                or_children.emplace_back(c);
+                clauses.emplace_back(mkOr(or_children));
+                visited[expr] = c; // no need to visit again
+                condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
+                return c;
+            }
+            // a or b or ... <=> c <-> a or b or ...
+            // => c -> a or b or ... => ¬c or a or b or ... => ¬c or a or b or ...
+            // => a or b or ... -> c => (¬a and ¬b and ...) or c => ¬a or c and ¬b or c and ...
+            else if (expr->isOr()) {
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for (size_t i = 0; i < expr->getChildrenSize(); i++) {
+                    std::shared_ptr<DAGNode> child_cnf = completed(expr->getChild(i));
+                    children.emplace_back(child_cnf);
+                }
+                if(children.size() == 1){
+                    // return the only child, which is a temp var or boolean variable
+                    condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
+                    return children[0];
+                }
+                std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
+                std::vector<std::shared_ptr<DAGNode>> or_children;
+                for(auto& child : children) {
+                    clauses.emplace_back(mkOr({mkNot(child), c}));
+                    or_children.emplace_back(child);
+                }
+                or_children.emplace_back(mkNot(c));
+                clauses.emplace_back(mkOr(or_children));
+                visited[expr] = c; // no need to visit again
+                condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
+                return c;
+            }
+            // c <-> (a1 -> a2 -> ... -> an), which is c <-> (¬a1 or ... or ¬a(n-1) or an).
+            // => forward:  c -> the disjunction  =>  ¬c or ¬a1 or ... or ¬a(n-1) or an
+            // => converse: the disjunction -> c.  A disjunction implies c exactly when
+            //    EVERY disjunct does, so this is one clause PER DISJUNCT, not one clause
+            //    listing them all:
+            //        (a1 or c), ..., (a(n-1) or c), (¬an or c)
+            //    The single clause (¬a1 or ... or ¬an or c) that stood here is a
+            //    different formula -- it encodes (a1 and ... and an) -> c -- and it is
+            //    strictly weaker. With a1 false the antecedent a1 -> a2 holds, so c must
+            //    be true, but that clause is already satisfied by ¬a1 and leaves c free.
+            //    The result stays equisatisfiable, which is why nothing caught it for so
+            //    long, and stops being equivalent: the auxiliary is no longer a function
+            //    of the originals, so the number of models grows. Counted on
+            //    (or x (=> a b)) over all variables of the encoding: 7 models for the
+            //    formula, 9 for the clause set. Only a nested implication is affected --
+            //    an implication that is the whole assertion has its definition variable
+            //    pinned by the assertion itself, which is why this survived.
+            else if (expr->isImplies()) {
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for (size_t i = 0; i < expr->getChildrenSize(); i++) {
+                    std::shared_ptr<DAGNode> child_cnf = completed(expr->getChild(i));
+                    children.emplace_back(child_cnf);
+                }
+                if(children.size() == 1){
+                    // return the only child, which is a temp var or boolean variable
+                    condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
+                    return children[0];
+                }
+                std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
+                std::vector<std::shared_ptr<DAGNode>> or_children1;
+                or_children1.emplace_back(mkNot(c));
+                for(size_t i = 0; i < children.size(); i++) {
+                    if(i == children.size() - 1){
+                        or_children1.emplace_back(children[i]);
+                    } else {
+                        or_children1.emplace_back(mkNot(children[i]));
+                    }
+                }
+                clauses.emplace_back(mkOr(or_children1));
+                // The converse, one clause per disjunct of the implication.
+                for(size_t i = 0; i < children.size(); i++) {
+                    std::vector<std::shared_ptr<DAGNode>> converse;
+                    if(i == children.size() - 1){
+                        converse.emplace_back(mkNot(children[i]));
+                    } else {
+                        converse.emplace_back(children[i]);
+                    }
+                    converse.emplace_back(c);
+                    clauses.emplace_back(mkOr(converse));
+                }
+                visited[expr] = c; // no need to visit again
+                condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
+                return c;
+            }
+            // c <-> a xor b <=> (c -> a xor b) and (a xor b -> c)
+            // => c -> a xor b => ¬c or a xor b => ¬c or ((¬a or ¬b) and (a or b))
+            //    => (¬c or ¬a or ¬b) and (¬c or a or b)
+            // => a xor b -> c => ¬((¬a and b) or (a and ¬b)) or c => (a or ¬b) and (¬a or b) -> c
+            //    => (a or ¬b or c) and (¬a or b or c)
+            else if (expr->isXor()) {
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i));
+                    children.emplace_back(child);
+                }
+                std::shared_ptr<DAGNode> result = children[0];
+                for(size_t i = 1; i < children.size(); i++){
+                    result = toTseitinXor(result, children[i], clauses);
+                }
+                visited[expr] = result;
+                return result;
+            }
+            else if(expr->isEq()){
+                // all children are boolean variables
+                bool all_bool = true;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    if(!expr->getChild(i)->getSort()->isBool()){
+                        all_bool = false;
+                        err_all(ERROR_TYPE::ERR_TYPE_MIS, "Need boolean variables for eq, but got " + expr->getChild(i)->getSort()->toString());
+                        break;
+                    }
+                }
+
+                condAssert(all_bool, "toTseitinCNF: eq has non-boolean variables");
+
+                if(all_bool){
+                    if(expr->getChildrenSize() == 1){
+                        // directly return the only child
+                        std::shared_ptr<DAGNode> child_cnf = completed(expr->getChild(0));
+                        visited[expr] = child_cnf;
+                        return child_cnf;
+                    }
+                    else if(expr->getChildrenSize() == 2){
+                        // two children
+                        std::shared_ptr<DAGNode> a = completed(expr->getChild(0));
+                        std::shared_ptr<DAGNode> b = completed(expr->getChild(1));
+                        std::shared_ptr<DAGNode> c = toTseitinEq(a, b, clauses);
+                        visited[expr] = c;
+                        condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
+                        return c;
+                    }
+                    else{
+                        // multiple children
+                        std::vector<std::shared_ptr<DAGNode>> eq_results;
+                        std::shared_ptr<DAGNode> first = completed(expr->getChild(0));
+
+                        for(size_t i = 1; i < expr->getChildrenSize(); i++){
+                            std::shared_ptr<DAGNode> next = completed(expr->getChild(i));
+                            eq_results.emplace_back(toTseitinEq(first, next, clauses));
+                        }
+
+                        // combine all equalities using AND
+                        std::shared_ptr<DAGNode> result = mkTempVar(SortManager::BOOL_SORT);
+
+                        // add the equivalence relation clauses
+                        // result -> (eq1 ∧ eq2 ∧ ... ∧ eqn)
+                        // => ¬result ∨ (eq1 ∧ eq2 ∧ ... ∧ eqn)
+                        // => (¬result ∨ eq1) ∧ (¬result ∨ eq2) ∧ ... ∧ (¬result ∨ eqn)
+                        for(auto& eq : eq_results){
+                            clauses.emplace_back(mkOr({mkNot(result), eq}));
+                        }
+
+                        // (eq1 ∧ eq2 ∧ ... ∧ eqn) -> result
+                        // => ¬(eq1 ∧ eq2 ∧ ... ∧ eqn) ∨ result
+                        // => (¬eq1 ∨ ¬eq2 ∨ ... ∨ ¬eqn) ∨ result
+                        std::vector<std::shared_ptr<DAGNode>> or_children;
+                        for(auto& eq : eq_results){
+                            or_children.emplace_back(mkNot(eq));
+                        }
+                        or_children.emplace_back(result);
+                        clauses.emplace_back(mkOr(or_children));
+
+                        visited[expr] = result;
+                        condAssert(result->isLiteral() || result->isTempVar(), "toTseitinCNF: result is not a literal or temp var");
+                        return result;
+                    }
+                }
+            }
+            else if(expr->isDistinct() && expr->getChild(0)->getSort()->isBool() && expr->getChild(1)->getSort()->isBool()){
+                // ensure all children are boolean
+                bool all_bool = true;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    if(!expr->getChild(i)->getSort()->isBool()){
+                        all_bool = false;
+                        break;
+                    }
+                }
+
+                if(all_bool){
+                    // handle boolean inequality
+                    if(expr->getChildrenSize() == 1){
+                        // single child, meaningless, return true
+                        err_all(ERROR_TYPE::ERR_TYPE_MIS, "distinct with 1 variable is meaningless");
+                        return mkTrue();
+                    }
+                    else if(expr->getChildrenSize() == 2){
+                        // two children
+                        std::shared_ptr<DAGNode> a = completed(expr->getChild(0));
+                        std::shared_ptr<DAGNode> b = completed(expr->getChild(1));
+                        std::shared_ptr<DAGNode> c = toTseitinDistinct(a, b, clauses);
+                        visited[expr] = c;
+                        condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
+                        return c;
+                    }
+                    else{
+                        // for boolean variables, distinct with more than 2 variables is always unsatisfiable
+                        // because boolean values can only be true or false
+                        // std::cerr << "toTseitinCNF: distinct with more than 2 variables is always unsatisfiable" << std::endl;
+                        return mkFalse();
+                    }
+                }
+            }
+            else if(expr->isIte() && expr->getChild(1)->getSort()->isBool() && expr->getChild(2)->getSort()->isBool()){
+                // handle condition expression: if a then b else c
+                std::shared_ptr<DAGNode> a = completed(expr->getChild(0));
+                std::shared_ptr<DAGNode> b = completed(expr->getChild(1));
+                std::shared_ptr<DAGNode> c = completed(expr->getChild(2));
+                std::shared_ptr<DAGNode> d = mkTempVar(SortManager::BOOL_SORT);
+
+                // add clause: (¬d ∨ ¬a ∨ b) - when a is true, d must be the same as b
+                clauses.emplace_back(mkOr({mkNot(d), mkNot(a), b}));
+
+                // add clause: (¬d ∨ a ∨ c) - when a is false, d must be the same as c
+                clauses.emplace_back(mkOr({mkNot(d), a, c}));
+
+                // add clause: (d ∨ ¬a ∨ ¬b) - when a is true and b is true, d must be true
+                clauses.emplace_back(mkOr({d, mkNot(a), mkNot(b)}));
+
+                // add clause: (d ∨ a ∨ ¬c) - when a is false and c is false, d must be true
+                clauses.emplace_back(mkOr({d, a, mkNot(c)}));
+
+                visited[expr] = d;
+                condAssert(d->isLiteral() || d->isTempVar(), "toTseitinCNF: d is not a literal or temp var");
+                return d;
+            }
+            else{
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type: " + kindToString(expr->getKind()));
+                return mkFalse();
+            }
+
             return expr;
-        }
-        if (visited.find(expr) != visited.end()) {
-            return visited[expr];
-        }
-        
-        if(expr->isLet()){
-            std::shared_ptr<DAGNode> result = toTseitinCNF(expandLet(expr), visited, clauses);
-            visited[expr] = result;
-            return result;
-        }
-        // c <-> ¬a <=> c -> ¬a and ¬a -> c
-        // => ¬c or ¬a
-        // => a or c
-        if(expr->isNot()){
-            // Convert the child first so that clauses only ever reference
-            // literals / abstraction variables (the child may be an atom or a
-            // nested formula when toTseitinCNF is called outside toCNF).
-            std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
-            std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-            clauses.emplace_back(mkOr({mkNot(c), mkNot(a)}));
-            clauses.emplace_back(mkOr({a, c}));
-            visited[expr] = c;
-            return c;
-        }
-        // a and b and ... <=> c <-> a and b and ...
-        // => c -> a and b and ... => ¬c or a and b and ... => (¬c or a) and (¬c or b) and ...
-        // => a and b and ... -> c => ¬a or ¬b or ... or c
-        else if (expr->isAnd()) {
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child_cnf = toTseitinCNF(expr->getChild(i), visited, clauses);
-                children.emplace_back(child_cnf);
-            }
-            if(children.size() == 1){
-                // return the only child, which is a temp var or boolean variable
-                condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
-                return children[0];
-            }
-            std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-            std::vector<std::shared_ptr<DAGNode>> or_children;
-            for(auto& child : children) {
-                clauses.emplace_back(mkOr({mkNot(c), child}));
-                or_children.emplace_back(mkNot(child));
-            }
-            or_children.emplace_back(c);
-            clauses.emplace_back(mkOr(or_children));
-            visited[expr] = c; // no need to visit again
-            condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
-            return c;
-        }
-        // a or b or ... <=> c <-> a or b or ...
-        // => c -> a or b or ... => ¬c or a or b or ... => ¬c or a or b or ...
-        // => a or b or ... -> c => (¬a and ¬b and ...) or c => ¬a or c and ¬b or c and ...
-        else if (expr->isOr()) {
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child_cnf = toTseitinCNF(expr->getChild(i), visited, clauses);
-                children.emplace_back(child_cnf);
-            }
-            if(children.size() == 1){
-                // return the only child, which is a temp var or boolean variable
-                condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
-                return children[0];
-            }
-            std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-            std::vector<std::shared_ptr<DAGNode>> or_children;
-            for(auto& child : children) {
-                clauses.emplace_back(mkOr({mkNot(child), c}));
-                or_children.emplace_back(child);
-            }
-            or_children.emplace_back(mkNot(c));
-            clauses.emplace_back(mkOr(or_children));
-            visited[expr] = c; // no need to visit again
-            condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
-            return c;
-        }
-        // c <-> a -> b <=> c -> a -> b and a -> b -> c
-        // => c -> a -> b => ¬c or ¬a or b
-        // => a -> b -> c => ¬a or ¬b or c
-        else if (expr->isImplies()) {
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child_cnf = toTseitinCNF(expr->getChild(i), visited, clauses);
-                children.emplace_back(child_cnf);
-            }
-            if(children.size() == 1){
-                // return the only child, which is a temp var or boolean variable
-                condAssert(children[0]->isLiteral(), "toTseitinCNF: children[0] is not a literal");
-                return children[0];
-            }
-            std::shared_ptr<DAGNode> c = mkTempVar(SortManager::BOOL_SORT);
-            std::vector<std::shared_ptr<DAGNode>> or_children1;
-            std::vector<std::shared_ptr<DAGNode>> or_children2;
-            or_children1.emplace_back(mkNot(c));
-            for(size_t i = 0; i < children.size(); i++) {
-                if(i == children.size() - 1){
-                    or_children1.emplace_back(children[i]);
-                } else {
-                    or_children1.emplace_back(mkNot(children[i]));
-                }
-                or_children2.emplace_back(mkNot(children[i]));
-            }
-            or_children2.emplace_back(c);
-            clauses.emplace_back(mkOr(or_children1));
-            clauses.emplace_back(mkOr(or_children2));
-            visited[expr] = c; // no need to visit again
-            condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
-            return c;
-        }
-        // c <-> a xor b <=> (c -> a xor b) and (a xor b -> c)
-        // => c -> a xor b => ¬c or a xor b => ¬c or ((¬a or ¬b) and (a or b))
-        //    => (¬c or ¬a or ¬b) and (¬c or a or b)
-        // => a xor b -> c => ¬((¬a and b) or (a and ¬b)) or c => (a or ¬b) and (¬a or b) -> c
-        //    => (a or ¬b or c) and (¬a or b or c)
-        else if (expr->isXor()) {
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                std::shared_ptr<DAGNode> child = toTseitinCNF(expr->getChild(i), visited, clauses);
-                children.emplace_back(child);
-            }
-            std::shared_ptr<DAGNode> result = children[0];
-            for(size_t i = 1; i < children.size(); i++){
-                result = toTseitinXor(result, children[i], clauses);
-            }
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isEq()){
-            // all children are boolean variables
-            bool all_bool = true;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                if(!expr->getChild(i)->getSort()->isBool()){
-                    all_bool = false;
-                    err_all(ERROR_TYPE::ERR_TYPE_MIS, "Need boolean variables for eq, but got " + expr->getChild(i)->getSort()->toString());
-                    break;
-                }
-            }
 
-            condAssert(all_bool, "toTseitinCNF: eq has non-boolean variables");
-            
-            if(all_bool){
-                if(expr->getChildrenSize() == 1){
-                    // directly return the only child
-                    std::shared_ptr<DAGNode> child_cnf = toTseitinCNF(expr->getChild(0), visited, clauses);
-                    visited[expr] = child_cnf;
-                    return child_cnf;
-                }
-                else if(expr->getChildrenSize() == 2){
-                    // two children
-                    std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
-                    std::shared_ptr<DAGNode> b = toTseitinCNF(expr->getChild(1), visited, clauses);
-                    std::shared_ptr<DAGNode> c = toTseitinEq(a, b, clauses);
-                    visited[expr] = c;
-                    condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
-                    return c;
-                }
-                else{
-                    // multiple children
-                    std::vector<std::shared_ptr<DAGNode>> eq_results;
-                    std::shared_ptr<DAGNode> first = toTseitinCNF(expr->getChild(0), visited, clauses);
-                    
-                    for(size_t i = 1; i < expr->getChildrenSize(); i++){
-                        std::shared_ptr<DAGNode> next = toTseitinCNF(expr->getChild(i), visited, clauses);
-                        eq_results.emplace_back(toTseitinEq(first, next, clauses));
-                    }
-                    
-                    // combine all equalities using AND
-                    std::shared_ptr<DAGNode> result = mkTempVar(SortManager::BOOL_SORT);
-                    
-                    // add the equivalence relation clauses
-                    // result -> (eq1 ∧ eq2 ∧ ... ∧ eqn)
-                    // => ¬result ∨ (eq1 ∧ eq2 ∧ ... ∧ eqn)
-                    // => (¬result ∨ eq1) ∧ (¬result ∨ eq2) ∧ ... ∧ (¬result ∨ eqn)
-                    for(auto& eq : eq_results){
-                        clauses.emplace_back(mkOr({mkNot(result), eq}));
-                    }
-                    
-                    // (eq1 ∧ eq2 ∧ ... ∧ eqn) -> result
-                    // => ¬(eq1 ∧ eq2 ∧ ... ∧ eqn) ∨ result
-                    // => (¬eq1 ∨ ¬eq2 ∨ ... ∨ ¬eqn) ∨ result
-                    std::vector<std::shared_ptr<DAGNode>> or_children;
-                    for(auto& eq : eq_results){
-                        or_children.emplace_back(mkNot(eq));
-                    }
-                    or_children.emplace_back(result);
-                    clauses.emplace_back(mkOr(or_children));
-                    
-                    visited[expr] = result;
-                    condAssert(result->isLiteral() || result->isTempVar(), "toTseitinCNF: result is not a literal or temp var");
-                    return result;
-                }
-            }
-        }
-        else if(expr->isDistinct() && expr->getChild(0)->getSort()->isBool() && expr->getChild(1)->getSort()->isBool()){
-            // ensure all children are boolean
-            bool all_bool = true;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                if(!expr->getChild(i)->getSort()->isBool()){
-                    all_bool = false;
-                    break;
-                }
-            }
-            
-            if(all_bool){
-                // handle boolean inequality
-                if(expr->getChildrenSize() == 1){
-                    // single child, meaningless, return true
-                    err_all(ERROR_TYPE::ERR_TYPE_MIS, "distinct with 1 variable is meaningless");
-                    return mkTrue();
-                }
-                else if(expr->getChildrenSize() == 2){
-                    // two children
-                    std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
-                    std::shared_ptr<DAGNode> b = toTseitinCNF(expr->getChild(1), visited, clauses);
-                    std::shared_ptr<DAGNode> c = toTseitinDistinct(a, b, clauses);
-                    visited[expr] = c;
-                    condAssert(c->isLiteral() || c->isTempVar(), "toTseitinCNF: c is not a literal or temp var");
-                    return c;
-                }
-                else{
-                    // for boolean variables, distinct with more than 2 variables is always unsatisfiable
-                    // because boolean values can only be true or false
-                    // std::cerr << "toTseitinCNF: distinct with more than 2 variables is always unsatisfiable" << std::endl;
-                    return mkFalse();
-                }
-            }
-        }
-        else if(expr->isIte() && expr->getChild(1)->getSort()->isBool() && expr->getChild(2)->getSort()->isBool()){
-            // handle condition expression: if a then b else c
-            std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
-            std::shared_ptr<DAGNode> b = toTseitinCNF(expr->getChild(1), visited, clauses);
-            std::shared_ptr<DAGNode> c = toTseitinCNF(expr->getChild(2), visited, clauses);
-            std::shared_ptr<DAGNode> d = mkTempVar(SortManager::BOOL_SORT);
-            
-            // add clause: (¬d ∨ ¬a ∨ b) - when a is true, d must be the same as b
-            clauses.emplace_back(mkOr({mkNot(d), mkNot(a), b}));
-            
-            // add clause: (¬d ∨ a ∨ c) - when a is false, d must be the same as c
-            clauses.emplace_back(mkOr({mkNot(d), a, c}));
-            
-            // add clause: (d ∨ ¬a ∨ ¬b) - when a is true and b is true, d must be true
-            clauses.emplace_back(mkOr({d, mkNot(a), mkNot(b)}));
-            
-            // add clause: (d ∨ a ∨ ¬c) - when a is false and c is false, d must be true
-            clauses.emplace_back(mkOr({d, a, mkNot(c)}));
-            
-            visited[expr] = d;
-            condAssert(d->isLiteral() || d->isTempVar(), "toTseitinCNF: d is not a literal or temp var");
-            return d;
-        }
-        else{
-            err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type: " + kindToString(expr->getKind()));
-            return mkFalse();
-        }
-
-        return expr;
+        };
+        return conversionPostorder(expr, visited, dependencies, finish);
     }
-    
+
     bool Parser::isCNF(std::shared_ptr<DAGNode> expr){
         if(expr->isAnd()){
             return isCNF(expr->getChildren());
@@ -720,7 +758,7 @@ namespace SOMTParser {
                 }
                 is_changed = true;
             }
-            else{   
+            else{
                 eli_exprs.emplace_back(expr);
             }
         }
@@ -732,23 +770,23 @@ namespace SOMTParser {
         // eliminate continuous or on the top level
         bool is_changed = false;
         std::vector<std::shared_ptr<DAGNode>> eli_exprs;
-        
+
         for(auto& expr : exprs){
             if(expr->isOr()){
                 // if it is an or, eliminate the continuous or on the top level
                 std::vector<std::shared_ptr<DAGNode>> or_children;
                 std::stack<std::shared_ptr<DAGNode>> stack;
-                
+
                 // push all children of the or to the stack
                 for(size_t i = 0; i < expr->getChildrenSize(); i++){
                     stack.push(expr->getChild(i));
                 }
-                
+
                 // expand all nested ors
                 while(!stack.empty()){
                     auto current = stack.top();
                     stack.pop();
-                    
+
                     if(current->isOr()){
                         // if the child is also an or, continue expanding
                         for(size_t i = 0; i < current->getChildrenSize(); i++){
@@ -760,7 +798,7 @@ namespace SOMTParser {
                         or_children.push_back(current);
                     }
                 }
-                
+
                 // create a new or expression
                 if(is_changed){
                     eli_exprs.emplace_back(mkOr(or_children));
@@ -773,7 +811,7 @@ namespace SOMTParser {
                 eli_exprs.emplace_back(expr);
             }
         }
-        
+
         new_exprs = eli_exprs;
         return is_changed;
     }
@@ -810,118 +848,123 @@ namespace SOMTParser {
     void Parser::assertTopCNF(std::shared_ptr<DAGNode> expr,
                               std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited,
                               std::vector<std::shared_ptr<DAGNode>>& clauses) {
-        if(expr->isLet()){
-            assertTopCNF(expandLet(expr), visited, clauses);
-            return;
-        }
-        if(expr->isAtom()){
-            // map the atom to its boolean abstraction literal (no clauses emitted)
-            clauses.emplace_back(toTseitinCNF(expr, visited, clauses));
-            return;
-        }
-        if(expr->isLiteral()){
-            if(expr->isTrue()){
-                return; // asserting true adds no constraint
+        std::vector<ConversionNode> pending{expr};
+        while(!pending.empty()) {
+            auto expr = std::move(pending.back()); pending.pop_back();
+
+            if(expr->isLet()){
+                pending.push_back(expandLet(expr));
+                continue;
             }
-            clauses.emplace_back(expr);
-            return;
-        }
-        if(expr->isAnd()){
-            // each conjunct is asserted independently
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                assertTopCNF(expr->getChild(i), visited, clauses);
+            if(expr->isAtom()){
+                // map the atom to its boolean abstraction literal (no clauses emitted)
+                clauses.emplace_back(toTseitinCNF(expr, visited, clauses));
+                continue;
             }
-            return;
-        }
-        if(expr->isNot()){
-            // NNF pushes negation onto atoms; an unabstracted ¬atom lands here
-            std::shared_ptr<DAGNode> lit = toTseitinCNF(expr->getChild(0), visited, clauses);
-            clauses.emplace_back(mkNot(lit));
-            return;
-        }
-        if(expr->isOr()){
-            // an asserted disjunction is itself a single clause
-            std::vector<std::shared_ptr<DAGNode>> lits;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
-            }
-            clauses.emplace_back(mkOr(lits));
-            return;
-        }
-        if(expr->isXor()){
-            // fold all but the last operand through Tseitin, then assert the
-            // final pair directly: r xor l <=> (r or l) and (¬r or ¬l)
-            std::vector<std::shared_ptr<DAGNode>> lits;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
-            }
-            if(lits.size() == 1){
-                clauses.emplace_back(lits[0]);
-                return;
-            }
-            std::shared_ptr<DAGNode> r = lits[0];
-            for(size_t i = 1; i + 1 < lits.size(); i++){
-                r = toTseitinXor(r, lits[i], clauses);
-            }
-            std::shared_ptr<DAGNode> last = lits.back();
-            clauses.emplace_back(mkOr({r, last}));
-            clauses.emplace_back(mkOr({mkNot(r), mkNot(last)}));
-            return;
-        }
-        if(expr->isImplies()){
-            // (=> a1 ... an b) asserted is the single clause ¬a1 ∨ ... ∨ ¬an ∨ b
-            std::vector<std::shared_ptr<DAGNode>> lits;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
-            }
-            if(lits.size() == 1){
-                clauses.emplace_back(lits[0]);
-                return;
-            }
-            std::vector<std::shared_ptr<DAGNode>> or_children;
-            for(size_t i = 0; i + 1 < lits.size(); i++){
-                or_children.emplace_back(mkNot(lits[i]));
-            }
-            or_children.emplace_back(lits.back());
-            clauses.emplace_back(mkOr(or_children));
-            return;
-        }
-        if(expr->isEq() && expr->getChildrenSize() >= 2){
-            bool all_bool = true;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                if(!expr->getChild(i)->getSort()->isBool()){
-                    all_bool = false;
-                    break;
+            if(expr->isLiteral()){
+                if(expr->isTrue()){
+                    continue; // asserting true adds no constraint
                 }
+                clauses.emplace_back(expr);
+                continue;
             }
-            if(all_bool){
-                // asserted iff chain: a1 = ai for all i, two binary clauses each
+            if(expr->isAnd()){
+                // each conjunct is asserted independently
+                for(size_t i = expr->getChildrenSize(); i > 0; --i){
+                    pending.push_back(expr->getChild(i - 1));
+                }
+                continue;
+            }
+            if(expr->isNot()){
+                // NNF pushes negation onto atoms; an unabstracted ¬atom lands here
+                std::shared_ptr<DAGNode> lit = toTseitinCNF(expr->getChild(0), visited, clauses);
+                clauses.emplace_back(mkNot(lit));
+                continue;
+            }
+            if(expr->isOr()){
+                // an asserted disjunction is itself a single clause
                 std::vector<std::shared_ptr<DAGNode>> lits;
                 for(size_t i = 0; i < expr->getChildrenSize(); i++){
                     lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
                 }
-                for(size_t i = 1; i < lits.size(); i++){
-                    clauses.emplace_back(mkOr({mkNot(lits[0]), lits[i]}));
-                    clauses.emplace_back(mkOr({lits[0], mkNot(lits[i])}));
-                }
-                return;
+                clauses.emplace_back(mkOr(lits));
+                continue;
             }
+            if(expr->isXor()){
+                // fold all but the last operand through Tseitin, then assert the
+                // final pair directly: r xor l <=> (r or l) and (¬r or ¬l)
+                std::vector<std::shared_ptr<DAGNode>> lits;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
+                }
+                if(lits.size() == 1){
+                    clauses.emplace_back(lits[0]);
+                    continue;
+                }
+                std::shared_ptr<DAGNode> r = lits[0];
+                for(size_t i = 1; i + 1 < lits.size(); i++){
+                    r = toTseitinXor(r, lits[i], clauses);
+                }
+                std::shared_ptr<DAGNode> last = lits.back();
+                clauses.emplace_back(mkOr({r, last}));
+                clauses.emplace_back(mkOr({mkNot(r), mkNot(last)}));
+                continue;
+            }
+            if(expr->isImplies()){
+                // (=> a1 ... an b) asserted is the single clause ¬a1 ∨ ... ∨ ¬an ∨ b
+                std::vector<std::shared_ptr<DAGNode>> lits;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
+                }
+                if(lits.size() == 1){
+                    clauses.emplace_back(lits[0]);
+                    continue;
+                }
+                std::vector<std::shared_ptr<DAGNode>> or_children;
+                for(size_t i = 0; i + 1 < lits.size(); i++){
+                    or_children.emplace_back(mkNot(lits[i]));
+                }
+                or_children.emplace_back(lits.back());
+                clauses.emplace_back(mkOr(or_children));
+                continue;
+            }
+            if(expr->isEq() && expr->getChildrenSize() >= 2){
+                bool all_bool = true;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    if(!expr->getChild(i)->getSort()->isBool()){
+                        all_bool = false;
+                        break;
+                    }
+                }
+                if(all_bool){
+                    // asserted iff chain: a1 = ai for all i, two binary clauses each
+                    std::vector<std::shared_ptr<DAGNode>> lits;
+                    for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                        lits.emplace_back(toTseitinCNF(expr->getChild(i), visited, clauses));
+                    }
+                    for(size_t i = 1; i < lits.size(); i++){
+                        clauses.emplace_back(mkOr({mkNot(lits[0]), lits[i]}));
+                        clauses.emplace_back(mkOr({lits[0], mkNot(lits[i])}));
+                    }
+                    continue;
+                }
+            }
+            if(expr->isDistinct() && expr->getChildrenSize() == 2 &&
+               expr->getChild(0)->getSort()->isBool() && expr->getChild(1)->getSort()->isBool()){
+                std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
+                std::shared_ptr<DAGNode> b = toTseitinCNF(expr->getChild(1), visited, clauses);
+                clauses.emplace_back(mkOr({a, b}));
+                clauses.emplace_back(mkOr({mkNot(a), mkNot(b)}));
+                continue;
+            }
+            // anything else: define the subformula and assert its literal
+            clauses.emplace_back(toTseitinCNF(expr, visited, clauses));
         }
-        if(expr->isDistinct() && expr->getChildrenSize() == 2 &&
-           expr->getChild(0)->getSort()->isBool() && expr->getChild(1)->getSort()->isBool()){
-            std::shared_ptr<DAGNode> a = toTseitinCNF(expr->getChild(0), visited, clauses);
-            std::shared_ptr<DAGNode> b = toTseitinCNF(expr->getChild(1), visited, clauses);
-            clauses.emplace_back(mkOr({a, b}));
-            clauses.emplace_back(mkOr({mkNot(a), mkNot(b)}));
-            return;
-        }
-        // anything else: define the subformula and assert its literal
-        clauses.emplace_back(toTseitinCNF(expr, visited, clauses));
     }
 
     // convert a list of expressions to CNF (a large AND node, whose children are all OR clauses)
     std::shared_ptr<DAGNode> Parser::toCNF(std::vector<std::shared_ptr<DAGNode>> exprs) {
-        // make a large AND node -> the same atom will use the same variable 
+        // make a large AND node -> the same atom will use the same variable
         // assume exprs is a vector of assertions, so we can first collect all top atoms
 
         // rebuild the maps
@@ -979,7 +1022,7 @@ namespace SOMTParser {
                 cnf_map[not_atom] = not_new_var;
                 atom_map[atom] = new_var;
                 atom_map[not_atom] = not_new_var;
-                
+
                 cnf_atom_map[new_var] = atom;
                 cnf_bool_var_map[atom] = new_var;
                 cnf_atom_map[not_new_var] = not_atom;
@@ -997,10 +1040,10 @@ namespace SOMTParser {
                 new_exprs.emplace_back(expr);
             }
         }
-        
+
         std::shared_ptr<DAGNode> result = mkAnd(new_exprs);
         std::shared_ptr<DAGNode> cnf;
-        
+
         // if it is already a CNF, no need to convert again
         if(already_cnf){
             cnf = result;
@@ -1009,7 +1052,7 @@ namespace SOMTParser {
             // convert to CNF
             cnf = toCNF(result);
         }
-        
+
         // Note: new_children contains the Tseitin variables for atoms, but these should NOT
         // be added as independent clauses. The atom definitions are handled implicitly
         // through the cnf_atom_map and cnf_bool_var_map mappings. The CNF formula already
@@ -1026,18 +1069,18 @@ namespace SOMTParser {
         if(cnf_map.find(expr) != cnf_map.end()){
             return cnf_map[expr];
         }
-        
+
         // expand let if needed
         if(expr->isLet()){
             expr = expandLet(expr);
         }
-        
+
         // convert to NNF first
         expr = toNNF(expr);
-        
+
         // check if it is already a CNF (structure-wise)
         bool already_cnf = isCNF(expr);
-        
+
         // collect all non-boolean variable atoms (including nested ones)
         std::unordered_set<std::shared_ptr<DAGNode>> atoms;
         std::unordered_set<std::shared_ptr<DAGNode>> visited;
@@ -1071,9 +1114,9 @@ namespace SOMTParser {
         if(atom_map.size() != 0){
             new_expr = replaceAtoms(expr, atom_map);
         }
-        
+
         std::shared_ptr<DAGNode> cnf;
-        
+
         // if it is already a CNF, no need to convert again
         if(already_cnf){
             cnf = new_expr;
@@ -1097,13 +1140,13 @@ namespace SOMTParser {
                 cnf = mkAnd(clauses);
             }
         }
-        
+
         // Note: new_children contains the Tseitin variables for atoms, but these should NOT
         // be added as independent clauses. The atom definitions are handled implicitly
         // through the cnf_atom_map and cnf_bool_var_map mappings. The CNF formula already
         // contains all necessary clauses after Tseitin transformation.
         // So we don't need to add new_children to the CNF result.
-        
+
         cnf_map[expr] = cnf;
         return cnf;
     }
@@ -1140,171 +1183,196 @@ namespace SOMTParser {
     std::shared_ptr<DAGNode> Parser::toDNFEliminateAll(std::shared_ptr<DAGNode> expr,
                                                         std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited,
                                                         bool& is_changed){
-        if(expr->isLiteral() || expr->isAtom() || expr->isTempVar()){ return expr; }
-        if(visited.find(expr) != visited.end()){
-            return visited[expr];
-        }
-
-        if(expr->isLet()){
-            std::shared_ptr<DAGNode> result = toDNFEliminateAll(expandLet(expr), visited, is_changed);
-            visited[expr] = result;
-            return result;
-        }
-
-        if(expr->isNot()){
-            bool child_changed = false;
-            std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(0), visited, child_changed);
-            if(child_changed){
-                is_changed = true;
+        ConversionCache expanded;
+        const auto dependencies = [&](const ConversionNode& node) {
+            if(node->isLiteral() || node->isAtom() || node->isTempVar()) return std::vector<ConversionNode>{};
+            if(node->isLet()) {
+                expanded[node] = expandLet(node);
+                return std::vector<ConversionNode>{expanded.at(node)};
             }
-            std::shared_ptr<DAGNode> result = mkNot(child);
-            visited[expr] = result;
+            return node->getChildren();
+        };
+        const auto completed = [&](const ConversionNode& node, bool& changed) {
+            auto result = visited.at(node);
+            changed |= result != node;
             return result;
-        }
-        else if(expr->isAnd()){
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                bool child_changed = false;
-                std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(i), visited, child_changed);
-                if(child_changed){
-                    is_changed = true;
-                }
-                children.emplace_back(child);
+        };
+        const auto finish = [&](const ConversionNode& expr) -> ConversionNode {
+            bool is_changed = false;
+
+            if(expr->isLiteral() || expr->isAtom() || expr->isTempVar()){ return expr; }
+            if(visited.find(expr) != visited.end()){
+                return visited[expr];
             }
-            if(is_changed){
-                std::shared_ptr<DAGNode> result = mkAnd(children);
+
+            if(expr->isLet()){
+                std::shared_ptr<DAGNode> result = completed(expanded.at(expr), is_changed);
                 visited[expr] = result;
                 return result;
             }
-            else{
-                // no change, return the original expression
-                visited[expr] = expr;
-                return expr;
-            }
-        }
-        else if(expr->isOr()){
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
+
+            if(expr->isNot()){
                 bool child_changed = false;
-                std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(i), visited, child_changed);
+                std::shared_ptr<DAGNode> child = completed(expr->getChild(0), child_changed);
                 if(child_changed){
                     is_changed = true;
                 }
-                children.emplace_back(child);
-            }
-            if(is_changed){
-                std::shared_ptr<DAGNode> result = mkOr(children);
+                std::shared_ptr<DAGNode> result = mkNot(child);
                 visited[expr] = result;
                 return result;
             }
-            else{
-                // no change, return the original expression
-                visited[expr] = expr;
-                return expr;
-            }
-        }
-        else if(expr->isImplies()){
-            // A -> B <=> ¬A ∨ B
-            std::shared_ptr<DAGNode> A = toDNFEliminateAll(expr->getChild(0), visited, is_changed);
-            std::shared_ptr<DAGNode> B = toDNFEliminateAll(expr->getChild(1), visited, is_changed);
-            std::shared_ptr<DAGNode> result = mkOr({mkNot(A), B});
-            is_changed = true;
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isIte()){
-            // if a then b else c <=> (¬a ∨ b) ∧ (a ∨ c)
-            std::shared_ptr<DAGNode> A = toDNFEliminateAll(expr->getChild(0), visited, is_changed);
-            std::shared_ptr<DAGNode> B = toDNFEliminateAll(expr->getChild(1), visited, is_changed);
-            std::shared_ptr<DAGNode> C = toDNFEliminateAll(expr->getChild(2), visited, is_changed);
-            std::shared_ptr<DAGNode> result = mkAnd({mkOr({mkNot(A), B}), mkOr({A, C})});
-            is_changed = true;
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isXor()){
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(i), visited, is_changed);
-                children.emplace_back(child);
-            }
-            std::shared_ptr<DAGNode> result = toDNFEliminateXOR(children);
-            is_changed = true;
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isEq()){
-            // check if all children are boolean types
-            bool all_bool = true;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                if(!expr->getChild(i)->getSort()->isBool()){
-                    all_bool = false;
-                    break;
+            else if(expr->isAnd()){
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    bool child_changed = false;
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i), child_changed);
+                    if(child_changed){
+                        is_changed = true;
+                    }
+                    children.emplace_back(child);
+                }
+                if(is_changed){
+                    std::shared_ptr<DAGNode> result = mkAnd(children);
+                    visited[expr] = result;
+                    return result;
+                }
+                else{
+                    // no change, return the original expression
+                    visited[expr] = expr;
+                    return expr;
                 }
             }
-
-            if(!all_bool){
-                err_all(ERROR_TYPE::ERR_TYPE_MIS, "eq with non-boolean variables");
-                return mkFalse();
-            }
-            
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                bool child_changed = false;
-                std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(i), visited, child_changed);
-                if(child_changed){
-                    is_changed = true;
+            else if(expr->isOr()){
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    bool child_changed = false;
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i), child_changed);
+                    if(child_changed){
+                        is_changed = true;
+                    }
+                    children.emplace_back(child);
                 }
-                children.emplace_back(child);
-            }
-            
-            std::shared_ptr<DAGNode> result = toDNFEliminateEq(children);
-            is_changed = true;
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isDistinct()){
-            // check if all children are boolean types
-            bool all_bool = true;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                if(!expr->getChild(i)->getSort()->isBool()){
-                    all_bool = false;
-                    break;
+                if(is_changed){
+                    std::shared_ptr<DAGNode> result = mkOr(children);
+                    visited[expr] = result;
+                    return result;
+                }
+                else{
+                    // no change, return the original expression
+                    visited[expr] = expr;
+                    return expr;
                 }
             }
-
-            if(!all_bool){
-                err_all(ERROR_TYPE::ERR_TYPE_MIS, "distinct with non-boolean variables");
-                return mkFalse();
-            }
-            
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                bool child_changed = false;
-                std::shared_ptr<DAGNode> child = toDNFEliminateAll(expr->getChild(i), visited, child_changed);
-                if(child_changed){
-                    is_changed = true;
+            else if(expr->isImplies()){
+                // A -> B <=> ¬A ∨ B
+                std::vector<ConversionNode> disjuncts;
+                for(size_t i = 0; i < expr->getChildrenSize(); ++i) {
+                    auto child = completed(expr->getChild(i), is_changed);
+                    disjuncts.push_back(i + 1 == expr->getChildrenSize() ? child : mkNot(child));
                 }
-                children.emplace_back(child);
-            }
-            
-            // if boolean type and more than 2 variables, distinct is unsatisfiable
-            if(all_bool && children.size() > 2){
-                std::shared_ptr<DAGNode> result = mkFalse();
+                std::shared_ptr<DAGNode> result = mkOr(disjuncts);
                 is_changed = true;
                 visited[expr] = result;
                 return result;
             }
-            
-            std::shared_ptr<DAGNode> result = toDNFEliminateDistinct(children);
-            is_changed = true;
-            visited[expr] = result;
-            return result;
-        }
-        else{
-            err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type: " + kindToString(expr->getKind()));
-            return mkFalse();
-        }
+            else if(expr->isIte()){
+                // if a then b else c <=> (¬a ∨ b) ∧ (a ∨ c)
+                std::shared_ptr<DAGNode> A = completed(expr->getChild(0), is_changed);
+                std::shared_ptr<DAGNode> B = completed(expr->getChild(1), is_changed);
+                std::shared_ptr<DAGNode> C = completed(expr->getChild(2), is_changed);
+                std::shared_ptr<DAGNode> result = mkAnd({mkOr({mkNot(A), B}), mkOr({A, C})});
+                is_changed = true;
+                visited[expr] = result;
+                return result;
+            }
+            else if(expr->isXor()){
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i), is_changed);
+                    children.emplace_back(child);
+                }
+                std::shared_ptr<DAGNode> result = toDNFEliminateXOR(children);
+                is_changed = true;
+                visited[expr] = result;
+                return result;
+            }
+            else if(expr->isEq()){
+                // check if all children are boolean types
+                bool all_bool = true;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    if(!expr->getChild(i)->getSort()->isBool()){
+                        all_bool = false;
+                        break;
+                    }
+                }
+
+                if(!all_bool){
+                    err_all(ERROR_TYPE::ERR_TYPE_MIS, "eq with non-boolean variables");
+                    return mkFalse();
+                }
+
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    bool child_changed = false;
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i), child_changed);
+                    if(child_changed){
+                        is_changed = true;
+                    }
+                    children.emplace_back(child);
+                }
+
+                std::shared_ptr<DAGNode> result = toDNFEliminateEq(children);
+                is_changed = true;
+                visited[expr] = result;
+                return result;
+            }
+            else if(expr->isDistinct()){
+                // check if all children are boolean types
+                bool all_bool = true;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    if(!expr->getChild(i)->getSort()->isBool()){
+                        all_bool = false;
+                        break;
+                    }
+                }
+
+                if(!all_bool){
+                    err_all(ERROR_TYPE::ERR_TYPE_MIS, "distinct with non-boolean variables");
+                    return mkFalse();
+                }
+
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    bool child_changed = false;
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i), child_changed);
+                    if(child_changed){
+                        is_changed = true;
+                    }
+                    children.emplace_back(child);
+                }
+
+                // if boolean type and more than 2 variables, distinct is unsatisfiable
+                if(all_bool && children.size() > 2){
+                    std::shared_ptr<DAGNode> result = mkFalse();
+                    is_changed = true;
+                    visited[expr] = result;
+                    return result;
+                }
+
+                std::shared_ptr<DAGNode> result = toDNFEliminateDistinct(children);
+                is_changed = true;
+                visited[expr] = result;
+                return result;
+            }
+            else{
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type: " + kindToString(expr->getKind()));
+                return mkFalse();
+            }
+
+        };
+        auto result = conversionPostorder(expr, visited, dependencies, finish);
+        is_changed |= result != expr;
+        return result;
     }
 
     // apply DNF distributive law
@@ -1316,256 +1384,185 @@ namespace SOMTParser {
 
     // flatten DNF expression, eliminate nested OR/AND
     std::shared_ptr<DAGNode> Parser::flattenDNF(std::shared_ptr<DAGNode> expr) {
-        if (!expr->isOr() && !expr->isAnd()) {
-            return expr;
-        }
-        
-        std::vector<std::shared_ptr<DAGNode>> flattened;
-        
-        if (expr->isOr()) {
-            // collect all OR node children, eliminate nested OR
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child = expr->getChild(i);
-                if (child->isOr()) {
-                    // if child is also OR, expand it
-                    for (size_t j = 0; j < child->getChildrenSize(); j++) {
-                        flattened.push_back(flattenDNF(child->getChild(j)));
-                    }
-                } else {
-                    flattened.push_back(flattenDNF(child));
+        ConversionCache cache;
+        return conversionPostorder(expr, cache,
+            [](const ConversionNode& node) {
+                return node->isOr() || node->isAnd() ? node->getChildren() : std::vector<ConversionNode>{};
+            }, [&](const ConversionNode& node) {
+                if(!node->isOr() && !node->isAnd()) return node;
+                std::vector<ConversionNode> children;
+                std::unordered_set<ConversionNode> seen;
+                for(const auto& original : node->getChildren()) {
+                    auto child = cache.at(original);
+                    const bool flatten = node->isOr() ? child->isOr() : child->isAnd();
+                    const auto terms = flatten ? child->getChildren() : std::vector<ConversionNode>{child};
+                    for(const auto& term : terms) if(seen.insert(term).second) children.push_back(term);
                 }
-            }
-            
-            // remove duplicates
-            std::unordered_set<std::shared_ptr<DAGNode>> unique_terms;
-            std::vector<std::shared_ptr<DAGNode>> result;
-            for (auto& term : flattened) {
-                if (unique_terms.find(term) == unique_terms.end()) {
-                    unique_terms.insert(term);
-                    result.push_back(term);
-                }
-            }
-            
-            if (result.size() == 1) {
-                return result[0];
-            }
-            return mkOr(result);
-        }
-        else { // expr->isAnd()
-            // collect all AND node children, eliminate nested AND
-            for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child = expr->getChild(i);
-                if (child->isAnd()) {
-                    // if child is also AND, expand it
-                    for (size_t j = 0; j < child->getChildrenSize(); j++) {
-                        flattened.push_back(flattenDNF(child->getChild(j)));
-                    }
-                } else {
-                    flattened.push_back(flattenDNF(child));
-                }
-            }
-            
-            // remove duplicates
-            std::unordered_set<std::shared_ptr<DAGNode>> unique_literals;
-            std::vector<std::shared_ptr<DAGNode>> result;
-            for (auto& literal : flattened) {
-                if (unique_literals.find(literal) == unique_literals.end()) {
-                    unique_literals.insert(literal);
-                    result.push_back(literal);
-                }
-            }
-            
-            if (result.size() == 1) {
-                return result[0];
-            }
-            return mkAnd(result);
-        }
+                return node->isOr() ? mkOr(children) : mkAnd(children);
+            });
     }
 
-    // recursive implementation of DNF distributive law
+    // Postorder implementation; the public helper name is retained for compatibility.
     std::shared_ptr<DAGNode> Parser::applyDNFDistributiveLawRec(
             std::shared_ptr<DAGNode> expr,
             std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited) {
-        
-        // base case: literal or visited node
-        if(expr->isLiteral() || expr->isAtom() || expr->isTempVar()) { 
-            return expr; 
-        }
-        
-        if(visited.find(expr) != visited.end()) {
-            return visited[expr];
-        }
+        ConversionCache expanded;
+        const auto dependencies = [&](const ConversionNode& node) {
+            if(node->isLiteral() || node->isAtom() || node->isTempVar() || node->isNot()) return std::vector<ConversionNode>{};
+            if(node->isLet()) {
+                expanded[node] = expandLet(node);
+                return std::vector<ConversionNode>{expanded.at(node)};
+            }
+            return node->getChildren();
+        };
+        const auto completed = [&](const ConversionNode& node) { return visited.at(node); };
+        const auto finish = [&](const ConversionNode& expr) -> ConversionNode {
 
-        if(expr->isLet()){
-            std::shared_ptr<DAGNode> result = applyDNFDistributiveLawRec(expandLet(expr), visited);
-            visited[expr] = result;
-            return result;
-        }
-        
-        if(expr->isNot()) {
-            // negation only appears in front of literals in NNF
-            return expr;
-        }
-        else if(expr->isOr()) {
-            // recursively process each child
-            std::vector<std::shared_ptr<DAGNode>> children;
-            bool has_or_child = false;
-            
-            for(size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child = applyDNFDistributiveLawRec(expr->getChild(i), visited);
-                if(child->isOr()) {
-                    has_or_child = true;
-                }
-                children.push_back(child);
+
+            // base case: literal or visited node
+            if(expr->isLiteral() || expr->isAtom() || expr->isTempVar()) {
+                return expr;
             }
-            
-            // if there are no nested OR children, return the OR node directly
-            if(!has_or_child) {
-                std::shared_ptr<DAGNode> result = mkOr(children);
+
+            if(visited.find(expr) != visited.end()) {
+                return visited[expr];
+            }
+
+            if(expr->isLet()){
+                std::shared_ptr<DAGNode> result = completed(expanded.at(expr));
                 visited[expr] = result;
                 return result;
             }
-            
-            // otherwise, flatten the nested OR node
-            std::vector<std::shared_ptr<DAGNode>> flattened;
-            for(auto& child : children) {
-                if(child->isOr()) {
-                    for(size_t j = 0; j < child->getChildrenSize(); j++) {
-                        flattened.push_back(child->getChild(j));
+
+            if(expr->isNot()) {
+                // negation only appears in front of literals in NNF
+                return expr;
+            }
+            else if(expr->isOr()) {
+                // Read each completed child.
+                std::vector<std::shared_ptr<DAGNode>> children;
+                bool has_or_child = false;
+
+                for(size_t i = 0; i < expr->getChildrenSize(); i++) {
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i));
+                    if(child->isOr()) {
+                        has_or_child = true;
                     }
-                } else {
-                    flattened.push_back(child);
+                    children.push_back(child);
                 }
-            }
-            
-            std::shared_ptr<DAGNode> result = mkOr(flattened);
-            visited[expr] = result;
-            return result;
-        }
-        else if(expr->isAnd()) {
-            // recursively process each child, and divide into OR children and non-OR children
-            std::vector<std::shared_ptr<DAGNode>> andChildren;
-            std::vector<std::shared_ptr<DAGNode>> orChildren;
-            
-            for(size_t i = 0; i < expr->getChildrenSize(); i++) {
-                std::shared_ptr<DAGNode> child = applyDNFDistributiveLawRec(expr->getChild(i), visited);
-                if(child->isOr()) {
-                    orChildren.push_back(child);
-                } else {
-                    andChildren.push_back(child);
+
+                // if there are no nested OR children, return the OR node directly
+                if(!has_or_child) {
+                    std::shared_ptr<DAGNode> result = mkOr(children);
+                    visited[expr] = result;
+                    return result;
                 }
-            }
-            
-            // if there are no OR children, return the AND node directly
-            if(orChildren.empty()) {
-                std::shared_ptr<DAGNode> result = mkAnd(andChildren);
-                visited[expr] = result;
-                return result;
-            }
-            
-            // apply distributive law
-            // initialize distributedOr as the first OR child
-            std::shared_ptr<DAGNode> distributedOr = orChildren[0];
-            
-            // apply distributive law to each subsequent OR child
-            for(size_t i = 1; i < orChildren.size(); i++) {
-                std::shared_ptr<DAGNode> currentOr = orChildren[i];
-                std::vector<std::shared_ptr<DAGNode>> newOrTerms;
-                
-                // distributive law: (a∨b∨c)∧(d∨e) → (a∧d)∨(a∧e)∨(b∧d)∨(b∧e)∨(c∧d)∨(c∧e)
-                for(size_t j = 0; j < distributedOr->getChildrenSize(); j++) {
-                    for(size_t k = 0; k < currentOr->getChildrenSize(); k++) {
-                        std::vector<std::shared_ptr<DAGNode>> andTerm;
-                        
-                        // copy previous AND terms
-                        if(distributedOr->getChild(j)->isAnd()) {
-                            for(size_t l = 0; l < distributedOr->getChild(j)->getChildrenSize(); l++) {
-                                andTerm.push_back(distributedOr->getChild(j)->getChild(l));
-                            }
-                        } else {
-                            andTerm.push_back(distributedOr->getChild(j));
-                        }
-                        
-                        // add new AND terms
-                        if(currentOr->getChild(k)->isAnd()) {
-                            for(size_t l = 0; l < currentOr->getChild(k)->getChildrenSize(); l++) {
-                                andTerm.push_back(currentOr->getChild(k)->getChild(l));
-                            }
-                        } else {
-                            andTerm.push_back(currentOr->getChild(k));
-                        }
-                        
-                        newOrTerms.push_back(mkAnd(andTerm));
-                    }
-                }
-                
-                distributedOr = mkOr(newOrTerms);
-            }
-            
-            // merge non-OR children into each OR term
-            if(!andChildren.empty()) {
-                std::vector<std::shared_ptr<DAGNode>> finalOrTerms;
-                
-                for(size_t i = 0; i < distributedOr->getChildrenSize(); i++) {
-                    std::vector<std::shared_ptr<DAGNode>> andTerm;
-                    
-                    // add original AND terms
-                    if(distributedOr->getChild(i)->isAnd()) {
-                        for(size_t j = 0; j < distributedOr->getChild(i)->getChildrenSize(); j++) {
-                            andTerm.push_back(distributedOr->getChild(i)->getChild(j));
+
+                // otherwise, flatten the nested OR node
+                std::vector<std::shared_ptr<DAGNode>> flattened;
+                for(auto& child : children) {
+                    if(child->isOr()) {
+                        for(size_t j = 0; j < child->getChildrenSize(); j++) {
+                            flattened.push_back(child->getChild(j));
                         }
                     } else {
-                        andTerm.push_back(distributedOr->getChild(i));
+                        flattened.push_back(child);
                     }
-                    
-                    // add additional AND children
-                    andTerm.insert(andTerm.end(), andChildren.begin(), andChildren.end());
-                    
-                    finalOrTerms.push_back(mkAnd(andTerm));
                 }
-                
-                distributedOr = mkOr(finalOrTerms);
+
+                std::shared_ptr<DAGNode> result = mkOr(flattened);
+                visited[expr] = result;
+                return result;
             }
-            
-            visited[expr] = distributedOr;
-            return distributedOr;
-        }
-        else {
-            // other node types (should not appear, because all complex operators have been processed through NNF conversion)
-            err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type in DNF conversion: " + kindToString(expr->getKind()));
-            return expr;
-        }
+            else if(expr->isAnd()) {
+                // Partition completed children into OR children and non-OR children.
+                std::vector<std::shared_ptr<DAGNode>> andChildren;
+                std::vector<std::shared_ptr<DAGNode>> orChildren;
+
+                for(size_t i = 0; i < expr->getChildrenSize(); i++) {
+                    std::shared_ptr<DAGNode> child = completed(expr->getChild(i));
+                    if(child->isOr()) {
+                        orChildren.push_back(child);
+                    } else {
+                        andChildren.push_back(child);
+                    }
+                }
+
+                // if there are no OR children, return the AND node directly
+                if(orChildren.empty()) {
+                    std::shared_ptr<DAGNode> result = mkAnd(andChildren);
+                    visited[expr] = result;
+                    return result;
+                }
+
+                // Keep disjuncts as a sequence: mkOr may simplify a prefix
+                // to one literal or a constant, so its children are not always
+                // the next distribution operands.
+                std::vector<ConversionNode> terms = orChildren.front()->getChildren();
+                for(size_t i = 1; i < orChildren.size(); ++i) {
+                    std::vector<ConversionNode> next;
+                    for(const auto& left : terms) {
+                        for(const auto& right : orChildren[i]->getChildren()) {
+                            auto term = mkAnd({left, right});
+                            if(!term->isFalse()) next.push_back(std::move(term));
+                        }
+                    }
+                    terms = std::move(next);
+                }
+                if(!andChildren.empty()) {
+                    for(auto& term : terms) {
+                        auto conjuncts = andChildren;
+                        conjuncts.insert(conjuncts.begin(), term);
+                        term = mkAnd(conjuncts);
+                    }
+                }
+                auto distributedOr = mkOr(terms);
+                visited[expr] = distributedOr;
+                return distributedOr;
+            }
+            else {
+                // other node types (should not appear, because all complex operators have been processed through NNF conversion)
+                err_all(ERROR_TYPE::ERR_TYPE_MIS, "unsupported node type in DNF conversion: " + kindToString(expr->getKind()));
+                return expr;
+            }
+
+        };
+        return conversionPostorder(expr, visited, dependencies, finish);
     }
-        
+
 
     // eliminate xor
     std::shared_ptr<DAGNode> Parser::toDNFEliminateXOR(const std::vector<std::shared_ptr<DAGNode>>& children) {
-        if (children.size() == 0) {
-            return mkFalse(); // return false
+        // Cancel repeated parity terms before expansion. A shared operand
+        // occurring twice contributes false; its negation also toggles the
+        // constant parity. Expanding first can create exponentially many
+        // contradictory terms even when the final formula is constant.
+        bool inverted = false;
+        std::vector<ConversionNode> order;
+        std::unordered_map<ConversionNode, bool> odd;
+        for(auto child : children) {
+            while(child->isNot()) {
+                inverted = !inverted;
+                child = child->getChild(0);
+            }
+            if(child->isTrue()) { inverted = !inverted; continue; }
+            if(child->isFalse()) continue;
+            auto inserted = odd.emplace(child, true);
+            if(inserted.second) order.push_back(child);
+            else inserted.first->second = !inserted.first->second;
         }
-        if (children.size() == 1) {
-            return toDNFEliminateAll(children[0]); // return the single child
+        std::vector<ConversionNode> operands;
+        for(const auto& child : order) if(odd.at(child)) operands.push_back(child);
+        if(operands.empty()) return inverted ? mkTrue() : mkFalse();
+        // Left-associative parity fold; the expression grows on the heap,
+        // not on the C++ call stack as the number of XOR operands increases.
+        auto result = operands.front();
+        for(size_t i = 1; i < operands.size(); ++i) {
+            const auto& right = operands[i];
+            result = mkOr({mkAnd({result, mkNot(right)}),
+                           mkAnd({mkNot(result), right})});
         }
-        if (children.size() == 2) {
-            // A XOR B = (A ∧ ¬B) ∨ (¬A ∧ B)
-            std::shared_ptr<DAGNode> A = children[0];
-            std::shared_ptr<DAGNode> B = children[1];
-            return mkOr({
-                mkAnd({A, mkNot(B)}),
-                mkAnd({mkNot(A), B})
-            });
-        }
-        
-        // multiple variables XOR: recursive implementation
-        // (A XOR B XOR C) = (A XOR B) XOR C
-        std::vector<std::shared_ptr<DAGNode>> first_part(children.begin(), children.begin() + children.size() - 1);
-        std::shared_ptr<DAGNode> rest = toDNFEliminateXOR(first_part);
-        std::shared_ptr<DAGNode> last = children.back();
-        
-        return mkOr({
-            mkAnd({rest, mkNot(last)}),
-            mkAnd({mkNot(rest), last})
-        });
+        return inverted ? mkNot(result) : result;
     }
 
     // eliminate eq
@@ -1573,24 +1570,14 @@ namespace SOMTParser {
         if (children.size() <= 1) {
             return mkTrue(); // return true
         }
-        if (children.size() == 2) {
-            // A = B <=> (A ∧ B) ∨ (¬A ∧ ¬B)
-            std::shared_ptr<DAGNode> A = children[0];
-            std::shared_ptr<DAGNode> B = children[1];
-            return mkOr({
-                mkAnd({A, B}),
-                mkAnd({mkNot(A), mkNot(B)})
-            });
+        std::vector<ConversionNode> equalities;
+        for(size_t i = 1; i < children.size(); ++i) {
+            const auto& left = children[i - 1];
+            const auto& right = children[i];
+            equalities.push_back(mkOr({mkAnd({left, right}),
+                                       mkAnd({mkNot(left), mkNot(right)})}));
         }
-        
-        // multiple variables eq: A = B = C = ... <=> (A = B) ∧ (B = C) ∧ ...
-        std::vector<std::shared_ptr<DAGNode>> eq_terms;
-        for (size_t i = 0; i < children.size() - 1; i++) {
-            std::vector<std::shared_ptr<DAGNode>> pair = {children[i], children[i+1]};
-            eq_terms.push_back(toDNFEliminateEq(pair));
-        }
-        
-        return mkAnd(eq_terms);
+        return mkAnd(equalities);
     }
 
     // eliminate distinct
@@ -1607,7 +1594,7 @@ namespace SOMTParser {
                 mkAnd({mkNot(A), B})
             });
         }
-        
+
         // multiple variables distinct: at least one pair is distinct
         // for boolean variables, more than 2 variables distinct is unsatisfiable
         return mkFalse(); // boolean domain, more than 2 variables distinct is unsatisfiable
@@ -1623,98 +1610,68 @@ namespace SOMTParser {
 
     // convert a single expression to NNF
     std::shared_ptr<DAGNode> Parser::toNNF(std::shared_ptr<DAGNode> expr, bool is_not) {
-        // handle constants and variables
-        if(expr->isCBool() || expr->isVBool()){
-            if(is_not){
-                return mkNot(expr);
+        struct Key { ConversionNode node; bool negative; };
+        struct Frame { Key key; std::vector<Key> children; size_t next = 0; };
+        std::unordered_map<ConversionNode, std::array<ConversionNode, 2>> cache;
+        ConversionCache expanded;
+        const auto dependencies = [&](const Key& key) {
+            std::vector<Key> children;
+            auto node = key.node;
+            if(node->isCBool() || node->isVBool()) return children;
+            if(node->isLet()) {
+                expanded[node] = expandLet(node);
+                children.push_back({expanded.at(node), key.negative});
+            } else if(node->isNot()) {
+                children.push_back({node->getChild(0), !key.negative});
+            } else if(node->isAnd() || node->isOr()) {
+                for(const auto& child : node->getChildren()) children.push_back({child, key.negative});
+            } else if(node->isImplies()) {
+                for(size_t i = 0; i < node->getChildrenSize(); ++i) {
+                    children.push_back({node->getChild(i),
+                        i + 1 == node->getChildrenSize() ? key.negative : !key.negative});
+                }
+            } else if(node->isIte() && node->getChild(1)->getSort()->isBool()) {
+                children = {{node->getChild(0), false}, {node->getChild(1), key.negative},
+                            {node->getChild(0), true}, {node->getChild(2), key.negative}};
             }
-            return expr;
-        }
-
-        if(expr->isLet()){
-            std::shared_ptr<DAGNode> result = toNNF(expandLet(expr), is_not);
-            nnf_map[expr] = result;
-            return result;
-        }
-
-        // handle NOT node
-        if(expr->isNot()){
-            // negate propagation: ¬¬A → A
-            return toNNF(expr->getChild(0), !is_not);
-        }
-        
-        // handle AND node
-        if(expr->isAnd()){
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                // recursively handle each child node
-                children.emplace_back(toNNF(expr->getChild(i), is_not));
+            return children;
+        };
+        const auto completed = [&](const Key& key) { return cache.at(key.node)[key.negative]; };
+        std::vector<Frame> pending{{{expr, is_not}, dependencies({expr, is_not})}};
+        std::unordered_map<const DAGNode*, std::array<bool, 2>> active;
+        active[expr.get()][is_not] = true;
+        while(!pending.empty()) {
+            auto& frame = pending.back();
+            if(frame.next < frame.children.size()) {
+                const auto child = frame.children[frame.next++];
+                if(cache[child.node][child.negative]) continue;
+                condAssert(!active[child.node.get()][child.negative], "cyclic expression in NNF conversion");
+                active[child.node.get()][child.negative] = true;
+                pending.push_back({child, dependencies(child)});
+                continue;
             }
-            
-            // apply De Morgan's law based on is_not: ¬(A∧B) → (¬A∨¬B)
-            if(is_not){
-                return mkOr(children);
+            auto node = frame.key.node;
+            const bool negative = frame.key.negative;
+            ConversionNode result;
+            if(node->isLet() || node->isNot()) {
+                result = completed(frame.children[0]);
+            } else if(node->isAnd() || node->isOr() || node->isImplies()) {
+                std::vector<ConversionNode> children;
+                for(const auto& child : frame.children) children.push_back(completed(child));
+                const bool conjunction = node->isImplies() ? negative : node->isAnd() != negative;
+                result = conjunction ? mkAnd(children) : mkOr(children);
+            } else if(node->isIte() && node->getChild(1)->getSort()->isBool()) {
+                result = mkOr({mkAnd({completed(frame.children[0]), completed(frame.children[1])}),
+                               mkAnd({completed(frame.children[2]), completed(frame.children[3])})});
             } else {
-                return mkAnd(children);
+                result = negative ? mkNot(node) : node;
             }
+            cache[node][negative] = result;
+            if(!negative && node->isLet()) nnf_map[node] = result;
+            active[node.get()][negative] = false;
+            pending.pop_back();
         }
-        
-        // handle OR node
-        if(expr->isOr()){
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                // recursively handle each child node
-                children.emplace_back(toNNF(expr->getChild(i), is_not));
-            }
-            
-            // apply De Morgan's law based on is_not: ¬(A∨B) → (¬A∧¬B)
-            if(is_not){
-                return mkAnd(children);
-            } else {
-                return mkOr(children);
-            }
-        }
-        
-        // handle IMPLIES node
-        if(expr->isImplies()){
-            std::shared_ptr<DAGNode> A = expr->getChild(0);
-            std::shared_ptr<DAGNode> B = expr->getChild(1);
-            
-            if(is_not){
-                // ¬(A→B) → (A∧¬B)
-                return mkAnd({toNNF(A, false), toNNF(B, true)});
-            } else {
-                // A→B → (¬A∨B)
-                return mkOr({toNNF(A, true), toNNF(B, false)});
-            }
-        }
-        
-        // handle ITE node (conditional expression)
-        if(expr->isIte() && expr->getChild(1)->getSort()->isBool()){
-            std::shared_ptr<DAGNode> A = expr->getChild(0);  // condition
-            std::shared_ptr<DAGNode> B = expr->getChild(1);  // then branch
-            std::shared_ptr<DAGNode> C = expr->getChild(2);  // else branch
-            
-            if(is_not){
-                // ¬(if A then B else C) → (A∧¬B)∨(¬A∧¬C)
-                return mkOr({
-                    mkAnd({toNNF(A, false), toNNF(B, true)}),
-                    mkAnd({toNNF(A, true), toNNF(C, true)})
-                });
-            } else {
-                // if A then B else C → (A∧B)∨(¬A∧C)
-                return mkOr({
-                    mkAnd({toNNF(A, false), toNNF(B, false)}),
-                    mkAnd({toNNF(A, true), toNNF(C, false)})
-                });
-            }
-        }
-        
-        // handle other types of nodes (e.g., arithmetic operators)
-        if(is_not){
-            return mkNot(expr);
-        }
-        return expr;
+        return cache.at(expr)[is_not];
     }
 
     // convert a single expression to NNF
@@ -1735,83 +1692,96 @@ namespace SOMTParser {
     }
 
     std::shared_ptr<DAGNode> Parser::splitOp(std::shared_ptr<DAGNode> expr, const std::unordered_set<NODE_KIND>& op_set, bool& is_changed, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited){
-        if(visited.find(expr) != visited.end()){
-            return visited[expr];
-        }
-        if(op_set.find(expr->getKind()) != op_set.end()){
-            if(expr->isLt() || expr->isGt() || expr->isEq()){
-                // std::cerr << "splitArithComp: " << expr->toString() << " is not supported"<< std::endl;
-                is_changed = false;
-                return expr;
+        const auto completed = [&](const ConversionNode& node, bool& changed) {
+            auto result = visited.at(node); changed |= result != node; return result;
+        };
+        const auto finish = [&](const ConversionNode& expr) -> ConversionNode {
+            bool is_changed = false;
+
+            if(visited.find(expr) != visited.end()){
+                return visited[expr];
             }
-            else if(expr->isGe()){
-                is_changed = true;
-                std::shared_ptr<DAGNode> left = expr->getChild(0);
-                std::shared_ptr<DAGNode> right = expr->getChild(1);
-                std::shared_ptr<DAGNode> gt = mkGt(left, right);
-                std::shared_ptr<DAGNode> eq = mkEq(left, right);
-                context_.split_lemmas.emplace_back(mkOr({
-                    mkNot(gt),
-                    mkNot(eq)
-                }));
-                return mkOr({
-                    gt,
-                    eq
-                });
-            }
-            else if(expr->isLe()){
-                is_changed = true;
-                std::shared_ptr<DAGNode> left = expr->getChild(0);
-                std::shared_ptr<DAGNode> right = expr->getChild(1);
-                std::shared_ptr<DAGNode> lt = mkLt(left, right);
-                std::shared_ptr<DAGNode> eq = mkEq(left, right);
-                context_.split_lemmas.emplace_back(mkOr({
-                    mkNot(lt),
-                    mkNot(eq)
-                }));
-                return mkOr({
-                    lt,
-                    eq
-                });
-            }
-            else if(expr->isDistinct()){
-                is_changed = true;
-                std::shared_ptr<DAGNode> left = expr->getChild(0);
-                std::shared_ptr<DAGNode> right = expr->getChild(1);
-                std::shared_ptr<DAGNode> lt = mkLt(left, right);
-                std::shared_ptr<DAGNode> gt = mkGt(left, right);
-                context_.split_lemmas.emplace_back(mkOr({
-                    mkNot(lt),
-                    mkNot(gt)
-                }));
-                return mkOr({
-                    lt,
-                    gt
-                });
+            if(op_set.find(expr->getKind()) != op_set.end()){
+                if(expr->isLt() || expr->isGt() || expr->isEq()){
+                    // std::cerr << "splitArithComp: " << expr->toString() << " is not supported"<< std::endl;
+                    is_changed = false;
+                    return expr;
+                }
+                else if(expr->isGe()){
+                    is_changed = true;
+                    std::shared_ptr<DAGNode> left = expr->getChild(0);
+                    std::shared_ptr<DAGNode> right = expr->getChild(1);
+                    std::shared_ptr<DAGNode> gt = mkGt(left, right);
+                    std::shared_ptr<DAGNode> eq = mkEq(left, right);
+                    context_.split_lemmas.emplace_back(mkOr({
+                        mkNot(gt),
+                        mkNot(eq)
+                    }));
+                    return mkOr({
+                        gt,
+                        eq
+                    });
+                }
+                else if(expr->isLe()){
+                    is_changed = true;
+                    std::shared_ptr<DAGNode> left = expr->getChild(0);
+                    std::shared_ptr<DAGNode> right = expr->getChild(1);
+                    std::shared_ptr<DAGNode> lt = mkLt(left, right);
+                    std::shared_ptr<DAGNode> eq = mkEq(left, right);
+                    context_.split_lemmas.emplace_back(mkOr({
+                        mkNot(lt),
+                        mkNot(eq)
+                    }));
+                    return mkOr({
+                        lt,
+                        eq
+                    });
+                }
+                else if(expr->isDistinct()){
+                    is_changed = true;
+                    std::shared_ptr<DAGNode> left = expr->getChild(0);
+                    std::shared_ptr<DAGNode> right = expr->getChild(1);
+                    std::shared_ptr<DAGNode> lt = mkLt(left, right);
+                    std::shared_ptr<DAGNode> gt = mkGt(left, right);
+                    context_.split_lemmas.emplace_back(mkOr({
+                        mkNot(lt),
+                        mkNot(gt)
+                    }));
+                    return mkOr({
+                        lt,
+                        gt
+                    });
+                }
+                else{
+                    // std::cerr << "splitArithComp: " << expr->toString() << " is not supported"<< std::endl;
+                    is_changed = false;
+                    return expr;
+                }
             }
             else{
-                // std::cerr << "splitArithComp: " << expr->toString() << " is not supported"<< std::endl;
-                is_changed = false;
-                return expr;
+                std::vector<std::shared_ptr<DAGNode>> children;
+                for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                    bool child_changed = false;
+                    std::shared_ptr<DAGNode> child = expr->getChild(i);
+                    std::shared_ptr<DAGNode> split_child = completed(child, child_changed);
+                    is_changed = is_changed || child_changed;
+                    children.emplace_back(split_child);
+                }
+                if(is_changed){
+                    std::shared_ptr<DAGNode> result = mkOper(expr->getSort(), expr->getKind(), children);
+                    visited[expr] = result;
+                    return result;
+                }
             }
-        }
-        else{
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                bool child_changed = false;
-                std::shared_ptr<DAGNode> child = expr->getChild(i);
-                std::shared_ptr<DAGNode> split_child = splitOp(child, op_set, child_changed, visited);
-                is_changed = is_changed || child_changed;
-                children.emplace_back(split_child);
-            }
-            if(is_changed){
-                std::shared_ptr<DAGNode> result = mkOper(expr->getSort(), expr->getKind(), children);
-                visited[expr] = result;
-                return result;
-            }
-        }
-        visited[expr] = expr;
-        return expr;
+            visited[expr] = expr;
+            return expr;
+
+        };
+        auto result = conversionPostorder(expr, visited, [&](const ConversionNode& node) {
+            return (op_set.count(node->getKind())) ? std::vector<ConversionNode>{} : node->getChildren();
+        }, finish);
+        is_changed |= result != expr;
+        return result;
     }
 
     std::vector<std::shared_ptr<DAGNode>> Parser::getSplitLemmas(){
@@ -1825,31 +1795,19 @@ namespace SOMTParser {
     }
 
     std::shared_ptr<DAGNode> Parser::remove(std::shared_ptr<DAGNode> expr, const std::unordered_set<std::shared_ptr<DAGNode>>& nodes, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited){
-        if(visited.find(expr) != visited.end()){
-            return visited[expr];
-        }
-        if(nodes.find(expr) != nodes.end()){
-            return NodeManager::NULL_NODE;
-        }
-        bool is_changed = false;
-        std::vector<std::shared_ptr<DAGNode>> children;
-        for(size_t i = 0; i < expr->getChildrenSize(); i++){
-            std::shared_ptr<DAGNode> child = expr->getChild(i);
-            std::shared_ptr<DAGNode> removed_child = remove(child, nodes, visited);
-            if(removed_child != NodeManager::NULL_NODE){
-                children.emplace_back(removed_child);
+        return conversionPostorder(expr, visited, [&](const ConversionNode& node) {
+            return nodes.count(node) ? std::vector<ConversionNode>{} : node->getChildren();
+        }, [&](const ConversionNode& node) {
+            if(nodes.count(node)) return NodeManager::NULL_NODE;
+            bool changed = false;
+            std::vector<ConversionNode> children;
+            for(const auto& child : node->getChildren()) {
+                auto result = visited.at(child);
+                changed |= result != child;
+                if(result != NodeManager::NULL_NODE) children.push_back(result);
             }
-            else{
-                is_changed = true;
-            }
-        }
-        if(is_changed){
-            std::shared_ptr<DAGNode> result = mkOper(expr->getSort(), expr->getKind(), children);
-            visited[expr] = result;
-            return result;
-        }
-        visited[expr] = expr;
-        return expr;
+            return changed ? mkOper(node->getSort(), node->getKind(), children) : node;
+        });
     }
 
     std::shared_ptr<DAGNode> Parser::binarizeOp(std::shared_ptr<DAGNode> expr, const std::unordered_set<NODE_KIND>& op_set){
@@ -1863,122 +1821,145 @@ namespace SOMTParser {
     }
 
     std::shared_ptr<DAGNode> Parser::binarizeOp(std::shared_ptr<DAGNode> expr, const std::unordered_set<NODE_KIND>& op_set, bool& is_changed, std::unordered_map<std::shared_ptr<DAGNode>, std::shared_ptr<DAGNode>>& visited){
-        if(visited.find(expr) != visited.end()){
-            return visited[expr];
-        }
-        if(op_set.find(expr->getKind()) != op_set.end()){
+        const auto completed = [&](const ConversionNode& node, bool& changed) {
+            auto result = visited.at(node); changed |= result != node; return result;
+        };
+        const auto finish = [&](const ConversionNode& expr) -> ConversionNode {
+            bool is_changed = false;
 
-            if(expr->isEq()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (= a b c) -> (and (= a b) (= a c))
-                    std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        children.emplace_back(mkEq({expr->getChild(i), expr->getChild(i+1)}));
-                    }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
-                }
-                else{
-                    // nothing to do
-                    is_changed = false;
-                }
+            if(visited.find(expr) != visited.end()){
+                return visited[expr];
             }
-            else if(expr->isDistinct()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (distinct a b c) -> (and (distinct a b) (distinct a c))
-                    std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        for(size_t j = i + 1; j < expr->getChildrenSize(); j++){
-                            children.emplace_back(mkDistinct({expr->getChild(i), expr->getChild(j)}));
+            if(op_set.find(expr->getKind()) != op_set.end()){
+
+                if(expr->isEq()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (= a b c) -> (and (= a b) (= a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            children.emplace_back(mkEq({expr->getChild(i), expr->getChild(i+1)}));
                         }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
                     }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
+                }
+                else if(expr->isDistinct()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (distinct a b c) -> (and (distinct a b) (distinct a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            for(size_t j = i + 1; j < expr->getChildrenSize(); j++){
+                                children.emplace_back(mkDistinct({expr->getChild(i), expr->getChild(j)}));
+                            }
+                        }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
+                    }
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
+                }
+                else if(expr->isGe()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (>= a b c) -> (and (>= a b) (>= a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            children.emplace_back(mkGe({expr->getChild(i), expr->getChild(i+1)}));
+                        }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
+                    }
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
+                }
+                else if(expr->isLe()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (<= a b c) -> (and (<= a b) (<= a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            children.emplace_back(mkLe({expr->getChild(i), expr->getChild(i+1)}));
+                        }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
+                    }
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
+                }
+                else if(expr->isGt()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (> a b c) -> (and (> a b) (> a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            children.emplace_back(mkGt({expr->getChild(i), expr->getChild(i+1)}));
+                        }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
+                    }
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
+                }
+                else if(expr->isLt()){
+                    if(expr->getChildrenSize() > 2){
+                        is_changed = true;
+                        // (< a b c) -> (and (< a b) (< a c))
+                        std::vector<std::shared_ptr<DAGNode>> children;
+                        for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
+                            children.emplace_back(mkLt({expr->getChild(i), expr->getChild(i+1)}));
+                        }
+                        std::shared_ptr<DAGNode> result = mkAnd(children);
+                        visited[expr] = result;
+                        return result;
+                    }
+                    else{
+                        // nothing to do
+                        is_changed = false;
+                    }
                 }
                 else{
-                    // nothing to do
-                    is_changed = false;
-                }
-            }
-            else if(expr->isGe()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (>= a b c) -> (and (>= a b) (>= a c))
+                    // not supported now
                     std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        children.emplace_back(mkGe({expr->getChild(i), expr->getChild(i+1)}));
+                    for(size_t i = 0; i < expr->getChildrenSize(); i++){
+                        bool child_changed = false;
+                        std::shared_ptr<DAGNode> child = expr->getChild(i);
+                        std::shared_ptr<DAGNode> binarized_child = completed(child, child_changed);
+                        is_changed = is_changed || child_changed;
+                        children.emplace_back(binarized_child);
                     }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
-                }
-                else{
-                    // nothing to do
-                    is_changed = false;
-                }
-            }
-            else if(expr->isLe()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (<= a b c) -> (and (<= a b) (<= a c))
-                    std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        children.emplace_back(mkLe({expr->getChild(i), expr->getChild(i+1)}));
+                    if(is_changed){
+                        std::shared_ptr<DAGNode> result = mkOper(expr->getSort(), expr->getKind(), children);
+                        visited[expr] = result;
+                        return result;
                     }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
-                }
-                else{
-                    // nothing to do
-                    is_changed = false;
-                }
-            }
-            else if(expr->isGt()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (> a b c) -> (and (> a b) (> a c))
-                    std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        children.emplace_back(mkGt({expr->getChild(i), expr->getChild(i+1)}));
-                    }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
-                }
-                else{
-                    // nothing to do
-                    is_changed = false;
-                }
-            }
-            else if(expr->isLt()){
-                if(expr->getChildrenSize() > 2){
-                    is_changed = true;
-                    // (< a b c) -> (and (< a b) (< a c))
-                    std::vector<std::shared_ptr<DAGNode>> children;
-                    for(size_t i = 0; i < expr->getChildrenSize() - 1; i++){
-                        children.emplace_back(mkLt({expr->getChild(i), expr->getChild(i+1)}));
-                    }
-                    std::shared_ptr<DAGNode> result = mkAnd(children);
-                    visited[expr] = result;
-                    return result;
-                }
-                else{
-                    // nothing to do
-                    is_changed = false;
                 }
             }
             else{
-                // not supported now
+                // not in op_set, just go on recursion
                 std::vector<std::shared_ptr<DAGNode>> children;
                 for(size_t i = 0; i < expr->getChildrenSize(); i++){
                     bool child_changed = false;
                     std::shared_ptr<DAGNode> child = expr->getChild(i);
-                    std::shared_ptr<DAGNode> binarized_child = binarizeOp(child, op_set, child_changed, visited);
+                    std::shared_ptr<DAGNode> binarized_child = completed(child, child_changed);
                     is_changed = is_changed || child_changed;
                     children.emplace_back(binarized_child);
                 }
@@ -1988,36 +1969,26 @@ namespace SOMTParser {
                     return result;
                 }
             }
-        }
-        else{
-            // not in op_set, just go on recursion
-            std::vector<std::shared_ptr<DAGNode>> children;
-            for(size_t i = 0; i < expr->getChildrenSize(); i++){
-                bool child_changed = false;
-                std::shared_ptr<DAGNode> child = expr->getChild(i);
-                std::shared_ptr<DAGNode> binarized_child = binarizeOp(child, op_set, child_changed, visited);
-                is_changed = is_changed || child_changed;
-                children.emplace_back(binarized_child);
-            }
-            if(is_changed){
-                std::shared_ptr<DAGNode> result = mkOper(expr->getSort(), expr->getKind(), children);
-                visited[expr] = result;
-                return result;
-            }
-        }
-        visited[expr] = expr;
-        return expr;
+            visited[expr] = expr;
+            return expr;
+
+        };
+        auto result = conversionPostorder(expr, visited, [&](const ConversionNode& node) {
+            return (op_set.count(node->getKind()) && (node->isEq() || node->isDistinct() || node->isGe() || node->isLe() || node->isGt() || node->isLt())) ? std::vector<ConversionNode>{} : node->getChildren();
+        }, finish);
+        is_changed |= result != expr;
+        return result;
     }
 
     std::shared_ptr<DAGNode> Parser::binarizeOp(std::shared_ptr<DAGNode> expr){
-        return binarizeOp(expr, {NODE_KIND::NT_EQ, NODE_KIND::NT_EQ_BOOL, NODE_KIND::NT_EQ_OTHER, 
-                                NODE_KIND::NT_DISTINCT, NODE_KIND::NT_DISTINCT_BOOL, NODE_KIND::NT_DISTINCT_OTHER, 
+        return binarizeOp(expr, {NODE_KIND::NT_EQ, NODE_KIND::NT_EQ_BOOL, NODE_KIND::NT_EQ_OTHER,
+                                NODE_KIND::NT_DISTINCT, NODE_KIND::NT_DISTINCT_BOOL, NODE_KIND::NT_DISTINCT_OTHER,
                                 NODE_KIND::NT_GE, NODE_KIND::NT_LE, NODE_KIND::NT_GT, NODE_KIND::NT_LT});
     }
 
     std::shared_ptr<DAGNode> Parser::binarizeOp(std::vector<std::shared_ptr<DAGNode>> exprs){
-        return binarizeOp(mkAnd(exprs), {NODE_KIND::NT_EQ, NODE_KIND::NT_EQ_BOOL, NODE_KIND::NT_EQ_OTHER, 
-                                        NODE_KIND::NT_DISTINCT, NODE_KIND::NT_DISTINCT_BOOL, NODE_KIND::NT_DISTINCT_OTHER, 
+        return binarizeOp(mkAnd(exprs), {NODE_KIND::NT_EQ, NODE_KIND::NT_EQ_BOOL, NODE_KIND::NT_EQ_OTHER,
+                                        NODE_KIND::NT_DISTINCT, NODE_KIND::NT_DISTINCT_BOOL, NODE_KIND::NT_DISTINCT_OTHER,
                                         NODE_KIND::NT_GE, NODE_KIND::NT_LE, NODE_KIND::NT_GT, NODE_KIND::NT_LT});
     }
 

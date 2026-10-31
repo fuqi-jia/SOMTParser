@@ -1,0 +1,5 @@
+(define (domain d) (:requirements :adl :preferences)
+(:predicates (p))
+(:action use :parameters () :precondition (preference pref (p)) :effect (and))
+(:action set :parameters () :effect (p))
+(:action clear :parameters () :effect (not (p))))

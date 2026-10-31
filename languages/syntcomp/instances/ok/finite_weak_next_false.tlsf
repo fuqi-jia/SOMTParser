@@ -1,0 +1,2 @@
+INFO { TITLE: "weak next false at end" SEMANTICS: Finite,Mealy TARGET: Mealy }
+MAIN { INPUTS { } OUTPUTS { } GUARANTEES { X false; } }

@@ -49,6 +49,7 @@ namespace SOMTParser {
             HighPrecisionInteger(int i);
             HighPrecisionInteger(long i);
             HighPrecisionInteger(unsigned long i);
+            HighPrecisionInteger(long long i);
             // On LLP64 (Windows) unsigned long is 32-bit, so a 64-bit unsigned
             // value would otherwise narrow. Ported from the SMTStabilizer fork.
             HighPrecisionInteger(unsigned long long i);

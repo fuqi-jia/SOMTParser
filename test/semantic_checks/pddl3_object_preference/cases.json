@@ -1,0 +1,468 @@
+[
+  {
+    "name": "dynamic_same_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem dynamic_same_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": false,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "dynamic_different_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem dynamic_different_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) b) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "b",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "selector_write",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (pick) b) (done-writer)))\n)\n",
+    "problem": "(define (problem selector_write) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(pick)",
+        "b"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": false,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "undefined_selector_unselected_write",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem undefined_selector_unselected_write) (:domain object-soft)\n  (:init (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": null,
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "undefined_selector_write",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (pick) a) (done-writer)))\n)\n",
+    "problem": "(define (problem undefined_selector_write) (:domain object-soft)\n  (:init (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": null,
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(pick)",
+        "a"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": false,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "undefined_selected_same_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) a) (done-writer)))\n)\n",
+    "problem": "(define (problem undefined_selected_same_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": null,
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "a"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": false,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "undefined_selected_different_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem undefined_selected_different_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) b) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "b",
+        "(slot a)": null,
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "1",
+          "1"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "same_owner_reads_old_value",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (assign (slot a) a)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n)\n",
+    "problem": "(define (problem same_owner_reads_old_value) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) b) (= (slot b) a) (= (clock) 0))\n  (:goal (done-reader)) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 1,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "b",
+        "(slot b)": "a"
+      },
+      "own_assignment": [
+        "(slot a)",
+        "a"
+      ],
+      "writer_assignment": null,
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "same_owner_initializes_undefined",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (assign (slot a) a)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n)\n",
+    "problem": "(define (problem same_owner_initializes_undefined) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot b) a) (= (clock) 0))\n  (:goal (done-reader)) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 1,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": null,
+        "(slot b)": "a"
+      },
+      "own_assignment": [
+        "(slot a)",
+        "a"
+      ],
+      "writer_assignment": null,
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  },
+  {
+    "name": "same_owner_changes_selector",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at start (= (slot (pick)) a)))\n    :effect (and (at start (assign (pick) b)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n)\n",
+    "problem": "(define (problem same_owner_changes_selector) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) a) (= (slot b) b) (= (clock) 0))\n  (:goal (done-reader)) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 1,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "b"
+      },
+      "own_assignment": [
+        "(pick)",
+        "b"
+      ],
+      "writer_assignment": null,
+      "preference_point": "start",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "end_dynamic_same_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at end (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem end_dynamic_same_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "end",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "3",
+          "3"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": false,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "end_dynamic_different_target",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (at end (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) b) (done-writer)))\n)\n",
+    "problem": "(define (problem end_dynamic_different_target) (:domain object-soft)\n  (:init (= (pick) a) (= (other) b) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "b",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "b"
+      ],
+      "preference_point": "end",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "3",
+          "3"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 0,
+      "signed_cost": 3
+    }
+  },
+  {
+    "name": "overall_becomes_undefined",
+    "domain": "(define (domain object-soft)\n  (:requirements :adl :fluents :durative-actions :continuous-effects :preferences)\n  (:types item) (:constants a b - item)\n  (:predicates (done-reader) (done-writer))\n  (:functions (pick) (other) - item (slot ?i - item) - item (clock) - number)\n  (:durative-action reader :parameters () :duration (= ?duration 2)\n    :condition (preference pref (over all (= (slot (pick)) a)))\n    :effect (and (at start (and)) (at end (done-reader))\n                 (increase (clock) (* #t 0))))\n  (:action writer :parameters () :precondition (and)\n    :effect (and (assign (slot (other)) undefined) (done-writer)))\n)\n",
+    "problem": "(define (problem overall_becomes_undefined) (:domain object-soft)\n  (:init (= (pick) a) (= (other) a) (= (slot a) a) (= (slot b) a) (= (clock) 0))\n  (:goal (and (done-reader) (done-writer))) (:metric minimize (+ total-time (* 7 (is-violated pref)))))\n",
+    "horizon": 2,
+    "source": {
+      "initial": {
+        "(pick)": "a",
+        "(other)": "a",
+        "(slot a)": "a",
+        "(slot b)": "a"
+      },
+      "own_assignment": null,
+      "writer_assignment": [
+        "(slot (other))",
+        "undefined"
+      ],
+      "preference_point": "overall",
+      "schedule": [
+        [
+          "reader",
+          "1",
+          "3"
+        ],
+        [
+          "writer",
+          "2",
+          "2"
+        ]
+      ]
+    },
+    "expected": {
+      "valid": true,
+      "violations": 1,
+      "signed_cost": 10
+    }
+  }
+]

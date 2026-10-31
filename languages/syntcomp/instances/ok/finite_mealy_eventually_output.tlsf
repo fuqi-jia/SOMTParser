@@ -1,0 +1,10 @@
+INFO {
+  TITLE: "finite Mealy eventually output"
+  SEMANTICS: Finite,Mealy
+  TARGET: Mealy
+}
+MAIN {
+  INPUTS { i; }
+  OUTPUTS { o; }
+  GUARANTEES { F o; }
+}

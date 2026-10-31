@@ -1,0 +1,6 @@
+% §2.2: FlatZinc ALWAYS writes the domain, so carrying it is materialisation
+% and not inference -- and dropping it widens the variable silently.
+var 1..4: x;
+var 1..4: y;
+constraint int_lin_le([1, -1], [x, y], -1);
+solve satisfy;

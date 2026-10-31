@@ -1,0 +1,8 @@
+% The governing obligation: an unrecognised builtin is E_UNSUPPORTED_CONSTRUCT,
+% never a skipped constraint. The catalogue is open -- a solver may declare
+% support for additional predicates -- so a frontend meets unknown names as a
+% matter of course, and skipping one drops a constraint: more solutions, and
+% the answer looks like success.
+var int: x;
+constraint cumulative([1], [1], [1], x);
+solve satisfy;

@@ -34,6 +34,7 @@
 #include <mpfr.h>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,12 @@ namespace SOMTParser{
     //
     // Only "leaves" of the structural decomposition ever call std::regex — the
     // library itself does all real matching.  No custom NFA is implemented.
+
+    static bool regexAscii(const std::string& s) {
+        return std::all_of(s.begin(), s.end(), [](unsigned char c) {
+            return c < 0x80;
+        });
+    }
 
     static std::string regexEscapeForPattern(const std::string& s) {
         static const std::string kSpecials = ".^$*+?()[]{}\\|";
@@ -86,10 +93,14 @@ namespace SOMTParser{
         // re.none / re.all / re.allchar are stored as NT_CONST nodes by mkConstReg.
         case NK::NT_CONST: {
             const std::string& nm = regex->getName();
+            if (nm == "re.none")    return std::string("[^\\s\\S]");
             if (nm == "re.all")     return std::string("[\\s\\S]*");
             if (nm == "re.allchar") return std::string("[\\s\\S]");
             return std::nullopt;
         }
+
+        case NK::NT_REG_NONE:
+            return std::string("[^\\s\\S]");
 
         case NK::NT_REG_ALL:
             return std::string("[\\s\\S]*");
@@ -100,7 +111,9 @@ namespace SOMTParser{
         case NK::NT_STR_TO_REG: {
             auto child = regex->getChild(0);
             if (!child->isCStr()) return std::nullopt;
-            return regexEscapeForPattern(child->getStringLiteral());
+            const auto& literal = child->getStringLiteral();
+            if (!regexAscii(literal)) return std::nullopt;
+            return regexEscapeForPattern(literal);
         }
 
         case NK::NT_REG_RANGE: {
@@ -109,7 +122,14 @@ namespace SOMTParser{
             if (!lo_n->isCStr() || !hi_n->isCStr()) return std::nullopt;
             std::string lo = lo_n->getStringLiteral();
             std::string hi = hi_n->getStringLiteral();
-            if (lo.empty() || hi.empty()) return std::nullopt;
+            // std::regex operates on bytes; SMT-LIB ranges operate on Unicode
+            // characters. Preserve a non-ASCII expression instead of folding
+            // it under a different alphabet. Non-singleton ASCII endpoints
+            // and reversed endpoints denote the empty language, not a range
+            // formed from their first bytes.
+            if (!regexAscii(lo) || !regexAscii(hi)) return std::nullopt;
+            if (lo.size() != 1 || hi.size() != 1 || lo[0] > hi[0])
+                return std::string("[^\\s\\S]");
             if (lo[0] == hi[0])
                 return "[" + regexEscapeForClass(lo[0]) + "]";
             return "[" + regexEscapeForClass(lo[0]) + "-" + regexEscapeForClass(hi[0]) + "]";
@@ -1203,56 +1223,6 @@ namespace SOMTParser{
     }
     
 
-    // TODO??
-    std::string FloatingPointUtils::fpToUbv(const std::string& fp, const Integer& n){
-        condAssert(fp[0] == '#' && fp[1] == 'x', "FloatingPointUtils::fpToUbv: invalid floating point");
-        std::string res = "";
-        bool isNeg = fp[2] == '1';
-        if(!isNeg){
-            res = fp.substr(3, fp.size() - 3);
-        }
-        else{
-            res = fp.substr(3, fp.size() - 3);
-        }
-        if(res.size() < n.toULong() - 1){
-            res = std::string(n.toULong() - res.size() - 1, '0') + res;
-        }
-        else{
-            res = res.substr(res.size() - n.toULong() + 1, n.toULong() - 1);
-        }
-        if(isNeg){
-            res = "b1" + res;
-        }
-        else{
-            res = "b0" + res;
-        }
-        return res;
-    }
-    std::string FloatingPointUtils::fpToSbv(const std::string& fp, const Integer& n){
-        condAssert(fp[0] == '#' && fp[1] == 'x', "FloatingPointUtils::fpToSbv: invalid floating point");
-        std::string res = "";
-        bool isNeg = fp[2] == '1';
-        if(!isNeg){
-            res = fp.substr(3, fp.size() - 3);
-        }
-        else{
-            res = "b1" + fp.substr(3, fp.size() - 3);
-        }
-        if(res.size() < n.toULong() - 1){
-            res = std::string(n.toULong() - res.size() - 1, '0') + res;
-        }
-        else{
-            res = res.substr(res.size() - n.toULong() + 1, n.toULong() - 1);
-        }
-        if(isNeg){
-            res = "b1" + res;
-        }
-        else{
-            res = "b0" + res;
-        }
-        return res;
-    }
-
     std::string StringUtils::strSubstr(const std::string& s, const Integer& i, const Integer& j){
         // remove the quotes
         std::string s_clean = (s[0] == '"' && s[s.length()-1] == '"') ? s.substr(1, s.length()-2) : s;
@@ -1377,7 +1347,12 @@ namespace SOMTParser{
     {
         if (!str_node || !str_node->isCStr()) return std::nullopt;
         if (!regex) return std::nullopt;
-        return strInReHelper(str_node->getStringLiteral(), regex);
+        const auto& literal = str_node->getStringLiteral();
+        // This optional constant folder uses a byte-oriented regex engine.
+        // Declining a fold preserves the exact native regex for the solver;
+        // it does not refuse translation or approximate Unicode by bytes.
+        if (!regexAscii(literal)) return std::nullopt;
+        return strInReHelper(literal, regex);
     }
 
     // toString
@@ -1411,10 +1386,34 @@ namespace SOMTParser{
 
     std::string ConversionUtils::escapeString(const std::string& s){
         std::string result = "";
-        for(unsigned char c : s){
+        for(size_t i = 0; i < s.size(); ++i){
+            const auto c = static_cast<unsigned char>(s[i]);
+            if (c >= 0x80) {
+                // SMT-LIB literals contain printable ASCII plus Unicode
+                // escapes. Decode each UTF-8 character before escaping it;
+                // escaping individual bytes changes its value and length.
+                const size_t width = utf8CodePointWidth(s, i);
+                if (width < 2 || i + width > s.size())
+                    throw std::invalid_argument("invalid UTF-8 string literal");
+                unsigned point = c & ((1u << (7 - width)) - 1u);
+                for (size_t j = 1; j < width; ++j) {
+                    const auto next = static_cast<unsigned char>(s[i + j]);
+                    if ((next & 0xc0) != 0x80)
+                        throw std::invalid_argument("invalid UTF-8 string literal");
+                    point = (point << 6) | (next & 0x3f);
+                }
+                const unsigned minimum = width == 2 ? 0x80 : width == 3 ? 0x800 : 0x10000;
+                if (point < minimum || point > 0x2ffff)
+                    throw std::invalid_argument("string code point outside SMT-LIB UnicodeStrings range");
+                std::ostringstream escaped;
+                escaped << "\\u{" << std::hex << point << "}";
+                result += escaped.str();
+                i += width - 1;
+                continue;
+            }
             // SMT-LIB2 string escaping rules:
             //   - double quote is escaped as "" (two consecutive double-quotes)
-            //   - backslash is escaped as two backslashes
+            //   - backslash is escaped as \u{5c}
             //   - single quotes and other printable chars need no escaping
             //   - non-printable/control characters use \u{X} Unicode escape
             switch(c) {
@@ -1428,9 +1427,7 @@ namespace SOMTParser{
                     break;
                 default:
                     // printable ASCII: no escaping needed
-                    if(c >= 32) {
-                        // SMT-LIB strings are Unicode strings. Preserve UTF-8 bytes
-                        // instead of escaping each byte as a separate code point.
+                    if(c >= 32 && c <= 126) {
                         result += static_cast<char>(c);
                     } else {
                         // non-printable: use SMT-LIB2 Unicode escape \u{X}
@@ -1772,7 +1769,7 @@ namespace SOMTParser{
 
     int FloatingPointUtils::smtRMToFeround(const std::string& rm_name) {
         if(rm_name == "roundNearestTiesToEven" || rm_name == "RNE") return FE_TONEAREST;
-        if(rm_name == "roundNearestTiesToAway" || rm_name == "RNA") return FE_TONEAREST; // best effort
+        if(rm_name == "roundNearestTiesToAway" || rm_name == "RNA") return -1;
         if(rm_name == "roundTowardPositive"    || rm_name == "RTP") return FE_UPWARD;
         if(rm_name == "roundTowardNegative"    || rm_name == "RTN") return FE_DOWNWARD;
         if(rm_name == "roundTowardZero"        || rm_name == "RTZ") return FE_TOWARDZERO;
@@ -1790,16 +1787,40 @@ namespace SOMTParser{
 
     mpfr_rnd_t FloatingPointUtils::smtRMToMpfrRound(const std::string& rm_name) {
         if(rm_name == "roundNearestTiesToEven" || rm_name == "RNE") return MPFR_RNDN;
-        if(rm_name == "roundNearestTiesToAway" || rm_name == "RNA") return MPFR_RNDA;
+        // MPFR_RNDA rounds every inexact value away from zero; it is not RNA.
+        // RNDNA is an internal unsupported marker here, never passed to an
+        // MPFR arithmetic operation. Optional helpers preserve the source term.
+        if(rm_name == "roundNearestTiesToAway" || rm_name == "RNA") return MPFR_RNDNA;
         if(rm_name == "roundTowardPositive"    || rm_name == "RTP") return MPFR_RNDU;
         if(rm_name == "roundTowardNegative"    || rm_name == "RTN") return MPFR_RNDD;
         if(rm_name == "roundTowardZero"        || rm_name == "RTZ") return MPFR_RNDZ;
-        return MPFR_RNDN;
+        return MPFR_RNDNA;
     }
 
     mpfr_rnd_t FloatingPointUtils::getFPRoundingModeMpfr(const std::shared_ptr<DAGNode>& rm_node) {
-        if(!rm_node || rm_node->isNull()) return MPFR_RNDN;
+        if(!rm_node || rm_node->isNull() || !rm_node->isCRoundingMode()) return MPFR_RNDNA;
         return smtRMToMpfrRound(rm_node->getName());
+    }
+
+    static bool supportedMpfrRounding(mpfr_rnd_t rnd) {
+        return rnd == MPFR_RNDN || rnd == MPFR_RNDU || rnd == MPFR_RNDD
+            || rnd == MPFR_RNDZ || rnd == MPFR_RNDA;
+    }
+
+    static std::optional<FloatingPointUtils::FPValue> exactFpArithmeticResult(
+        const mpfr_t value, size_t eb, size_t sb, int inexact) {
+        // These arithmetic helpers currently use a wider MPFR temporary.
+        // Accept only exact operations whose result is also representable in
+        // the destination format; extraction must not silently truncate it.
+        if(inexact != 0) return std::nullopt;
+        auto result = FloatingPointUtils::FPValue::fromMpfr(value, eb, sb);
+        if(mpfr_nan_p(value) || mpfr_inf_p(value) || mpfr_zero_p(value)) return result;
+        mpfr_t restored;
+        mpfr_init2(restored, static_cast<mpfr_prec_t>(sb + 4));
+        result.toMpfr(restored);
+        const bool exact = mpfr_equal_p(value, restored) != 0;
+        mpfr_clear(restored);
+        return exact ? std::optional<FloatingPointUtils::FPValue>(result) : std::nullopt;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1809,6 +1830,7 @@ namespace SOMTParser{
     std::optional<FloatingPointUtils::FPValue>
     FloatingPointUtils::fpUnaryOp(const FPValue& a, size_t eb, size_t sb,
                                    mpfr_rnd_t rnd, MpfrUnaryFn op) {
+        if(!supportedMpfrRounding(rnd)) return std::nullopt;
         // Handle NaN input
         if(a.isNaN()) {
             FPValue nan_v;
@@ -1820,8 +1842,8 @@ namespace SOMTParser{
         mpfr_init2(ma, static_cast<mpfr_prec_t>(sb + 4));
         mpfr_init2(mr, static_cast<mpfr_prec_t>(sb + 4));
         a.toMpfr(ma);
-        op(mr, ma, rnd);
-        FPValue result = FPValue::fromMpfr(mr, eb, sb);
+        const int inexact = op(mr, ma, rnd);
+        auto result = exactFpArithmeticResult(mr, eb, sb, inexact);
         mpfr_clear(ma);
         mpfr_clear(mr);
         return result;
@@ -1831,6 +1853,7 @@ namespace SOMTParser{
     FloatingPointUtils::fpBinaryOp(const FPValue& a, const FPValue& b,
                                     size_t eb, size_t sb,
                                     mpfr_rnd_t rnd, MpfrBinaryFn op) {
+        if(!supportedMpfrRounding(rnd)) return std::nullopt;
         // NaN propagation: if either is NaN, result is NaN
         if(a.isNaN() || b.isNaN()) {
             FPValue nan_v;
@@ -1844,8 +1867,8 @@ namespace SOMTParser{
         mpfr_init2(mr, static_cast<mpfr_prec_t>(sb + 4));
         a.toMpfr(ma);
         b.toMpfr(mb);
-        op(mr, ma, mb, rnd);
-        FPValue result = FPValue::fromMpfr(mr, eb, sb);
+        const int inexact = op(mr, ma, mb, rnd);
+        auto result = exactFpArithmeticResult(mr, eb, sb, inexact);
         mpfr_clear(ma);
         mpfr_clear(mb);
         mpfr_clear(mr);
@@ -1856,6 +1879,7 @@ namespace SOMTParser{
     FloatingPointUtils::fpTernaryOp(const FPValue& a, const FPValue& b,
                                      const FPValue& c, size_t eb, size_t sb,
                                      mpfr_rnd_t rnd, MpfrTernaryFn op) {
+        if(!supportedMpfrRounding(rnd)) return std::nullopt;
         if(a.isNaN() || b.isNaN() || c.isNaN()) {
             FPValue nan_v;
             nan_v.eb = eb; nan_v.sb = sb; nan_v.sign = 0;
@@ -1870,8 +1894,8 @@ namespace SOMTParser{
         a.toMpfr(ma);
         b.toMpfr(mb);
         c.toMpfr(mc);
-        op(mr, ma, mb, mc, rnd);
-        FPValue result = FPValue::fromMpfr(mr, eb, sb);
+        const int inexact = op(mr, ma, mb, mc, rnd);
+        auto result = exactFpArithmeticResult(mr, eb, sb, inexact);
         mpfr_clear(ma);
         mpfr_clear(mb);
         mpfr_clear(mc);
@@ -1937,6 +1961,7 @@ namespace SOMTParser{
     std::optional<FloatingPointUtils::FPValue>
     FloatingPointUtils::fpRoundToIntegral(const FPValue& a,
                                            size_t eb, size_t sb, mpfr_rnd_t rnd) {
+        if(!supportedMpfrRounding(rnd)) return std::nullopt;
         if(a.isNaN()) {
             FPValue nan_v;
             nan_v.eb = eb; nan_v.sb = sb; nan_v.sign = 0;
@@ -1995,37 +2020,44 @@ namespace SOMTParser{
 
     std::optional<FloatingPointUtils::FPValue>
     FloatingPointUtils::realToFpValue(const Number& real, size_t eb, size_t sb, mpfr_rnd_t rnd) {
+        if(!supportedMpfrRounding(rnd) || eb < 2 || eb > 16 || sb < 2 || sb > 64)
+            return std::nullopt;
         mpfr_t m;
-        mpfr_init2(m, static_cast<mpfr_prec_t>(sb + 16)); // extra precision for rounding
+        mpfr_init2(m, static_cast<mpfr_prec_t>(sb));
+        // Round every storage kind directly to the target format. A wider
+        // temporary followed by fromMpfr's bit extraction truncates the final
+        // significand and loses the requested directed rounding mode.
+        const mpfr_exp_t fmt_emax = static_cast<mpfr_exp_t>(1LL << (eb - 1));
+        const mpfr_exp_t fmt_emin = 3 - fmt_emax - static_cast<mpfr_exp_t>(sb - 1);
+        const mpfr_exp_t old_emin = mpfr_get_emin();
+        const mpfr_exp_t old_emax = mpfr_get_emax();
+        mpfr_set_emin(fmt_emin);
+        mpfr_set_emax(fmt_emax);
+        int tern = 0;
         // Use storage kind, not mathematical isInteger(): REAL_TYPE values like 10.0
         // satisfy isInteger() but must use getReal(), not getInteger().
         if(real.getType() == Number::INT_TYPE) {
             auto& intVal = real.getInteger();
-            mpfr_set_z(m, intVal.getMPZ().get_mpz_t(), rnd);
+            tern = mpfr_set_z(m, intVal.getMPZ().get_mpz_t(), rnd);
         } else if(real.getType() == Number::REAL_TYPE) {
             mpfr_srcptr src = real.getReal().getMPFR();
-            mpfr_set(m, src, rnd);
+            tern = mpfr_set(m, src, rnd);
         } else if(real.getType() == Number::RATIONAL_TYPE) {
             // Exact rational -> FP, correctly rounded in ONE step to the (eb,sb)
             // IEEE format.  Setting MPFR's exponent range to the format and
             // subnormalizing makes the result exactly representable, so fromMpfr()
             // below merely extracts its bits (no double-rounding).  This is what
             // makes the emitted (fp #b..) literal match SMT-LIB's native to_fp.
-            mpfr_set_prec(m, static_cast<mpfr_prec_t>(sb));
-            const mpfr_exp_t fmt_emax = static_cast<mpfr_exp_t>(1LL << (eb - 1));
-            const mpfr_exp_t fmt_emin = 3 - fmt_emax - static_cast<mpfr_exp_t>(sb - 1);
-            const mpfr_exp_t old_emin = mpfr_get_emin();
-            const mpfr_exp_t old_emax = mpfr_get_emax();
-            mpfr_set_emin(fmt_emin);
-            mpfr_set_emax(fmt_emax);
-            int tern = mpfr_set_q(m, real.getRational().getMPQ().get_mpq_t(), rnd);
-            mpfr_subnormalize(m, tern, rnd);
+            tern = mpfr_set_q(m, real.getRational().getMPQ().get_mpq_t(), rnd);
+        } else {
             mpfr_set_emin(old_emin);
             mpfr_set_emax(old_emax);
-        } else {
             mpfr_clear(m);
             return std::nullopt;
         }
+        mpfr_subnormalize(m, tern, rnd);
+        mpfr_set_emin(old_emin);
+        mpfr_set_emax(old_emax);
         // Now round m to target FP format
         FPValue result = FPValue::fromMpfr(m, eb, sb);
         mpfr_clear(m);
@@ -2034,31 +2066,27 @@ namespace SOMTParser{
 
     std::optional<FloatingPointUtils::FPValue>
     FloatingPointUtils::bvToFpValueSigned(uint64_t bv_val, size_t bv_width, size_t eb, size_t sb, mpfr_rnd_t rnd) {
-        // Interpret BV as signed 2's complement integer
-        int64_t signed_val;
-        if(bv_width < 64 && (bv_val & (1ULL << (bv_width - 1)))) {
-            // Negative: sign-extend
-            signed_val = static_cast<int64_t>(bv_val | (~0ULL << bv_width));
-        } else {
-            signed_val = static_cast<int64_t>(bv_val);
-        }
-        mpfr_t m;
-        mpfr_init2(m, static_cast<mpfr_prec_t>(sb + 16));
-        mpfr_set_sj(m, signed_val, rnd);
-        FPValue result = FPValue::fromMpfr(m, eb, sb);
-        mpfr_clear(m);
-        return result;
+        if(!supportedMpfrRounding(rnd) || bv_width == 0 || bv_width > 64)
+            return std::nullopt;
+        if(bv_width < 64) bv_val &= (uint64_t{1} << bv_width) - 1;
+        // Decode two's complement exactly, including width 64, without an
+        // implementation-defined unsigned-to-signed host integer conversion.
+        Integer value(static_cast<unsigned long long>(bv_val));
+        if(bv_val & (uint64_t{1} << (bv_width - 1)))
+            value -= Integer(1) << static_cast<unsigned long>(bv_width);
+        // Use the same single target-format rounding as Int/Real conversion.
+        // A wider temporary followed by bit extraction loses RTP/RTN and can
+        // also round a value above a halfway point in the wrong direction.
+        return realToFpValue(Number(value), eb, sb, rnd);
     }
 
     std::optional<FloatingPointUtils::FPValue>
     FloatingPointUtils::bvToFpValueUnsigned(uint64_t bv_val, size_t bv_width, size_t eb, size_t sb, mpfr_rnd_t rnd) {
-        (void)bv_width; // bv_val is already masked to width by parseBVBits
-        mpfr_t m;
-        mpfr_init2(m, static_cast<mpfr_prec_t>(sb + 16));
-        mpfr_set_uj(m, bv_val, rnd);
-        FPValue result = FPValue::fromMpfr(m, eb, sb);
-        mpfr_clear(m);
-        return result;
+        if(!supportedMpfrRounding(rnd) || bv_width == 0 || bv_width > 64)
+            return std::nullopt;
+        if(bv_width < 64) bv_val &= (uint64_t{1} << bv_width) - 1;
+        return realToFpValue(Number(Integer(static_cast<unsigned long long>(bv_val))),
+                             eb, sb, rnd);
     }
 
     std::optional<FloatingPointUtils::FPValue>
@@ -2080,52 +2108,59 @@ namespace SOMTParser{
         return v;
     }
 
-    std::optional<std::string>
-    FloatingPointUtils::fpValueToUbv(const FPValue& v, size_t bv_width, mpfr_rnd_t rnd) {
+    static std::optional<std::string> fpValueToBvInteger(
+        const FloatingPointUtils::FPValue& v, size_t bv_width,
+        mpfr_rnd_t rnd, bool signed_result) {
+        // RNDA is away from zero, not SMT-LIB's nearest-ties-away (RNA).
+        // Leave unsupported rounding modes symbolic in both callers.
+        if(rnd != MPFR_RNDN && rnd != MPFR_RNDZ &&
+           rnd != MPFR_RNDU && rnd != MPFR_RNDD)
+            return std::nullopt;
+        if(bv_width == 0 || bv_width > std::numeric_limits<mp_bitcnt_t>::max() ||
+           v.eb < 2 || v.eb > 16 || v.sb < 2 || v.sb > 64 || v.sign > 1)
+            return std::nullopt;
+        if(v.exponent >= (uint64_t{1} << v.eb) ||
+           v.significand >= (uint64_t{1} << (v.sb - 1)))
+            return std::nullopt;
         if(v.isNaN() || v.isInf()) return std::nullopt;
-        if(v.isZero()) return "0"; // +0 and -0 → 0
+        if(v.isZero()) return "0";
+
+        mpz_class integer;
         mpfr_t m;
         mpfr_init2(m, static_cast<mpfr_prec_t>(v.sb + 4));
         v.toMpfr(m);
-        // Check negative → undefined for unsigned
-        if(mpfr_sgn(m) < 0) { mpfr_clear(m); return std::nullopt; }
-        // Round to integer in target rounding mode
-        mpfr_rint(m, m, rnd);
-        // Check range [0, 2^bv_width)
-        mpfr_t max_val;
-        mpfr_init2(max_val, static_cast<mpfr_prec_t>(bv_width + 4));
-        mpfr_set_ui(max_val, 1, MPFR_RNDN);
-        mpfr_mul_2ui(max_val, max_val, bv_width, MPFR_RNDN); // max_val = 2^bv_width
-        if(mpfr_cmp(m, max_val) >= 0) { mpfr_clear(m); mpfr_clear(max_val); return std::nullopt; }
-        mpfr_clear(max_val);
-        uint64_t val = mpfr_get_uj(m, MPFR_RNDZ);
+        if(!mpfr_number_p(m)) {
+            mpfr_clear(m);
+            return std::nullopt;
+        }
+        // Round directly to an arbitrary-precision integer. In particular,
+        // negative fractions may round to unsigned zero before the range test.
+        mpfr_get_z(integer.get_mpz_t(), m, rnd);
         mpfr_clear(m);
-        return std::to_string(val);
+
+        mpz_class limit(1);
+        const auto bound_bits = static_cast<mp_bitcnt_t>(
+            signed_result ? bv_width - 1 : bv_width);
+        mpz_mul_2exp(limit.get_mpz_t(), limit.get_mpz_t(), bound_bits);
+        if(integer >= limit) return std::nullopt;
+        if(signed_result) {
+            if(integer < -limit) return std::nullopt;
+            // The decimal BV literal is the unsigned two's-complement residue.
+            if(integer < 0) integer += 2 * limit;
+        } else if(integer < 0) {
+            return std::nullopt;
+        }
+        return integer.get_str();
+    }
+
+    std::optional<std::string>
+    FloatingPointUtils::fpValueToUbv(const FPValue& v, size_t bv_width, mpfr_rnd_t rnd) {
+        return fpValueToBvInteger(v, bv_width, rnd, false);
     }
 
     std::optional<std::string>
     FloatingPointUtils::fpValueToSbv(const FPValue& v, size_t bv_width, mpfr_rnd_t rnd) {
-        if(v.isNaN() || v.isInf()) return std::nullopt;
-        if(v.isZero()) return "0";
-        mpfr_t m;
-        mpfr_init2(m, static_cast<mpfr_prec_t>(v.sb + 4));
-        v.toMpfr(m);
-        // Round to integer in target rounding mode
-        mpfr_rint(m, m, rnd);
-        // Check range [-2^(bv_width-1), 2^(bv_width-1))
-        int64_t min_val = -(1LL << (bv_width - 1));
-        int64_t max_val = (1LL << (bv_width - 1));
-        int64_t int_val = mpfr_get_sj(m, MPFR_RNDZ);
-        mpfr_clear(m);
-        if(int_val < min_val || int_val >= max_val) return std::nullopt;
-        // Convert to unsigned 2's complement representation
-        uint64_t unsigned_val;
-        if(int_val >= 0) {
-            unsigned_val = static_cast<uint64_t>(int_val);
-        } else {
-            unsigned_val = static_cast<uint64_t>(int_val + (1LL << bv_width));
-        }
-        return std::to_string(unsigned_val);
+        return fpValueToBvInteger(v, bv_width, rnd, true);
     }
 
     uint64_t FloatingPointUtils::parseBVBits(const std::string& bv_name) {
@@ -2244,6 +2279,12 @@ namespace SOMTParser{
         // (a) bit_representation form with BV children
         if(name == "(fp_bit_representation)" && node->getChildren().size() == 3) {
             auto ch = node->getChildren();
+            // The SMT-LIB fp constructor also accepts symbolic bit-vector
+            // terms. parseBVBits is a literal reader; symbolic names would
+            // otherwise be read as zero and unsoundly folded by callers.
+            if (!ch[0]->isCBV() || !ch[1]->isCBV() || !ch[2]->isCBV()) {
+                return std::nullopt;
+            }
             v.sign = parseBVBits(ch[0]->getName());
             v.exponent = parseBVBits(ch[1]->getName());
             v.significand = parseBVBits(ch[2]->getName());
@@ -2327,35 +2368,29 @@ namespace SOMTParser{
     // UF utilities
     // ═══════════════════════════════════════════════════════════════════════
 
-    namespace detail {
-        static void collectUFRec(
-            const std::shared_ptr<DAGNode>& node,
-            std::unordered_map<std::string, std::vector<UFApplication>>& out,
-            std::unordered_set<const DAGNode*>& visited)
-        {
-            if(!node || node->isNull()) return;
-            if(!visited.insert(node.get()).second) return;
-
-            if(node->isUFApplication()) {
-                UFApplication app;
-                app.func_name        = node->getName();
-                app.args             = node->getChildren();
-                app.application_node = node;
-                app.result_sort      = node->getSort();
-                out[app.func_name].push_back(std::move(app));
-            }
-
-            for(const auto& child : node->getChildren())
-                collectUFRec(child, out, visited);
-        }
-    } // namespace detail
-
     std::unordered_map<std::string, std::vector<UFApplication>>
     collectUFApplications(const std::vector<std::shared_ptr<DAGNode>>& assertions) {
         std::unordered_map<std::string, std::vector<UFApplication>> result;
         std::unordered_set<const DAGNode*> visited;
-        for(const auto& a : assertions)
-            detail::collectUFRec(a, result, visited);
+        std::vector<std::shared_ptr<DAGNode>> pending;
+        // Reverse the push order to retain the API's original left-to-right
+        // preorder, including its first occurrence order across shared roots.
+        pending.insert(pending.end(), assertions.rbegin(), assertions.rend());
+        while(!pending.empty()) {
+            auto node = std::move(pending.back());
+            pending.pop_back();
+            if(!node || node->isNull() || !visited.insert(node.get()).second) continue;
+            if(node->isUFApplication()) {
+                UFApplication app;
+                app.func_name = node->getName();
+                app.args = node->getChildren();
+                app.application_node = node;
+                app.result_sort = node->getSort();
+                result[app.func_name].push_back(std::move(app));
+            }
+            const auto& children = node->getChildren();
+            pending.insert(pending.end(), children.rbegin(), children.rend());
+        }
         return result;
     }
 

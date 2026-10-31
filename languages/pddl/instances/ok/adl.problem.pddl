@@ -1,0 +1,5 @@
+(define (problem adl-p1)
+  (:domain adl-core)
+  (:objects o - item)
+  (:init (p o) (q o) (q c))
+  (:goal (and (done) (p o))))

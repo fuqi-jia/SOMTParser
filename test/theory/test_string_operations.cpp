@@ -1,11 +1,24 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <utility>
 #include "somtparser/frontend/parser.h"
 #include "test_helpers.h"
 
 // Test string constants
 void test_string_constants(SOMTParser::ParserPtr& parser) {
+    for (const auto& value : std::vector<std::pair<std::string, std::string>>{
+             {"é", R"("\u{e9}")"},
+             {"😀", R"("\u{1f600}")"},
+             {"中", R"("\u{4e2d}")"},
+             {"a\"\\é", R"("a""\u{5c}\u{e9}")"}}) {
+        const auto literal = parser->mkConstStr(value.first);
+        VERIFY(literal->getStringLiteral() == value.first);
+        VERIFY(parser->toString(literal) == value.second);
+        const auto parsed = parser->mkExpr(value.second);
+        VERIFY(parsed && !parsed->isErr());
+        VERIFY(parsed->getStringLiteral() == value.first);
+    }
     std::vector<std::string> expressions = {
         "\"\"",                       // Empty string
         "\"Hello, World!\"",          // Simple string
@@ -220,6 +233,14 @@ void test_regex_evaluate(SOMTParser::ParserPtr& parser) {
     // re.range : "abc" is NOT in [a-z] because the range matches exactly 1 character
     EXPECT_FALSE(R"((str.in_re "abc" (re.range "a" "z"))))", "re.range abc NOT 1-char");
 
+    // Range endpoints must both be single characters. The old folder used
+    // only their first bytes and turned the first formula into true.
+    EXPECT_FALSE(R"((str.in_re "a" (re.range "ab" "z"))))", "multi-character lower range");
+    EXPECT_FALSE(R"((str.in_re "a" (re.range "a" "zz"))))", "multi-character upper range");
+    EXPECT_FALSE(R"((str.in_re "a" (re.range "" "z"))))", "empty range endpoint");
+    EXPECT_FALSE(R"((str.in_re "a" (re.range "z" "a"))))", "reversed range");
+    EXPECT_TRUE(R"((str.in_re "" (re.* (re.range "ab" "z"))))", "empty range star");
+
     // re.* : "1" is NOT in [a-z]*
     EXPECT_FALSE(R"((str.in_re "1" (re.* (re.range "a" "z"))))", "re.* 1 not in [a-z]*");
 
@@ -252,4 +273,4 @@ int main() {
     test_regex_evaluate(parser);
     
     return 0;
-} 
+}

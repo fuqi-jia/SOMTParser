@@ -1,0 +1,5 @@
+% A clause with positive and negative literal arrays.
+var bool: p;
+var bool: q;
+constraint bool_clause([p], [q]);
+solve satisfy;

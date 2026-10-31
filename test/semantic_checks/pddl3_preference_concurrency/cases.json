@@ -1,0 +1,496 @@
+[
+  {
+    "name": "start_true_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "start_true_same.domain.pddl",
+    "domain_sha256": "d5144e83a58d82774dda7e09047a6b6dd5642dfbe79d915dedc4f211542e1763",
+    "problem": "start_true_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "start_false_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 1,
+      "b_effect": "(not (p))"
+    },
+    "domain": "start_false_same.domain.pddl",
+    "domain_sha256": "36cbe439ec6814e685898f365098e2dc59dd979e2dbbbe30954c1a4ee4bb5dcf",
+    "problem": "start_false_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "start_folded_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "start_folded_same.domain.pddl",
+    "domain_sha256": "f32c97387d75fc5db412fb715dd80aed5d6e1ce36bab16aa095a195ff328d1b2",
+    "problem": "start_folded_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "start_derived_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "start_derived_same.domain.pddl",
+    "domain_sha256": "11c03b20bd2322a14c9b8bf962bf6deb2b12cf4ab4b00487833ff04b5f3927c1",
+    "problem": "start_derived_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "start_numeric_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(assign (x) 2)"
+    },
+    "domain": "start_numeric_same.domain.pddl",
+    "domain_sha256": "277b61d62637a2cff3ee357789ddea5c5e2aaadbd1465b47ecdba6d20f76663f",
+    "problem": "start_numeric_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "start_separated",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "start_separated.domain.pddl",
+    "domain_sha256": "d5144e83a58d82774dda7e09047a6b6dd5642dfbe79d915dedc4f211542e1763",
+    "problem": "start_separated.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "end_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "3",
+          "3"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "end_same.domain.pddl",
+    "domain_sha256": "c0d91fc92bc4e9e8e24000df5c018fc5094acb75c5bf8833dac3650b3106c878",
+    "problem": "end_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "end_numeric_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "3",
+          "3"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "b_effect": "(assign (x) 2)"
+    },
+    "domain": "end_numeric_same.domain.pddl",
+    "domain_sha256": "5385d940683ccd6bba1db4be65d2add8d0bd780bf17969a9591568e4d59cfb18",
+    "problem": "end_numeric_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "end_separated",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "b_effect": "(not (p))"
+    },
+    "domain": "end_separated.domain.pddl",
+    "domain_sha256": "c0d91fc92bc4e9e8e24000df5c018fc5094acb75c5bf8833dac3650b3106c878",
+    "problem": "end_separated.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "overall_internal",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "b_effect": "(not (p))"
+    },
+    "domain": "overall_internal.domain.pddl",
+    "domain_sha256": "43b2c177a1c3390c9f87c18964651d4ff6c32530d07f25a8e3a726a1b8cc57a9",
+    "problem": "overall_internal.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "overall_own_end",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "3",
+          "3"
+        ]
+      ],
+      "valid": true,
+      "cost": 0,
+      "b_effect": "(not (p))"
+    },
+    "domain": "overall_own_end.domain.pddl",
+    "domain_sha256": "43b2c177a1c3390c9f87c18964651d4ff6c32530d07f25a8e3a726a1b8cc57a9",
+    "problem": "overall_own_end.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "overall_own_start",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "b_effect": "(not (p))"
+    },
+    "domain": "overall_own_start.domain.pddl",
+    "domain_sha256": "43b2c177a1c3390c9f87c18964651d4ff6c32530d07f25a8e3a726a1b8cc57a9",
+    "problem": "overall_own_start.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "instant_same",
+    "horizon": 2,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "1"
+        ],
+        [
+          "b",
+          "1",
+          "1"
+        ]
+      ],
+      "valid": false,
+      "cost": 0,
+      "instant": true,
+      "b_effect": "(not (p))"
+    },
+    "domain": "instant_same.domain.pddl",
+    "domain_sha256": "ab27c2a1b00b66005ea8d8b6f5041ecab5b55ab606e11c7606c8565085937067",
+    "problem": "instant_same.problem.pddl",
+    "problem_sha256": "33bc36d1ce62d350847731edd37bdfea4a61b58f529b1636978b95a386a86c24"
+  },
+  {
+    "name": "same_owner_prop",
+    "horizon": 1,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "a_start": "(not (p))",
+      "goal": "(done-a)"
+    },
+    "domain": "same_owner_prop.domain.pddl",
+    "domain_sha256": "40424a7bd6d4d9621ccc4e07072f1bb5396e2d4a4f0dd57d193775b9df9b54b0",
+    "problem": "same_owner_prop.problem.pddl",
+    "problem_sha256": "5b5214e052831bf3722ed29a0ed2b7c81a94f9b54ff5a23c199aa42135a89eb5"
+  },
+  {
+    "name": "same_owner_numeric",
+    "horizon": 1,
+    "reference": {
+      "kind": "discrete",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "a_start": "(assign (x) 2)",
+      "goal": "(done-a)"
+    },
+    "domain": "same_owner_numeric.domain.pddl",
+    "domain_sha256": "f41c18c5c4a5cfb857b729c295c00ed92d442e8cc1c9e4c28a02597d7316712f",
+    "problem": "same_owner_numeric.problem.pddl",
+    "problem_sha256": "5b5214e052831bf3722ed29a0ed2b7c81a94f9b54ff5a23c199aa42135a89eb5"
+  },
+  {
+    "name": "continuous_internal_pre",
+    "horizon": 2,
+    "reference": {
+      "kind": "continuous",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "initial": "(= (x) -1)",
+      "curves": [
+        [
+          -1,
+          1
+        ],
+        [
+          -1,
+          1
+        ]
+      ],
+      "reset": "-1"
+    },
+    "domain": "continuous_internal_pre.domain.pddl",
+    "domain_sha256": "0acdadb7bc39d0b9058040cbfe49192966a24b6456984daa9245604edaf504ab",
+    "problem": "continuous_internal_pre.problem.pddl",
+    "problem_sha256": "764243ba87ae26e9d84d9ec7842af33c7bfeaba00e209a21b6385022786493a4"
+  },
+  {
+    "name": "continuous_internal_post",
+    "horizon": 2,
+    "reference": {
+      "kind": "continuous",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 1,
+      "initial": "(= (x) -1)",
+      "curves": [
+        [
+          -1,
+          -1
+        ],
+        [
+          0,
+          -1
+        ]
+      ],
+      "reset": "0"
+    },
+    "domain": "continuous_internal_post.domain.pddl",
+    "domain_sha256": "9429b1acd6508765b6268a2765166ece526a35dee4c76a3ac520cc91a4be488e",
+    "problem": "continuous_internal_post.problem.pddl",
+    "problem_sha256": "764243ba87ae26e9d84d9ec7842af33c7bfeaba00e209a21b6385022786493a4"
+  },
+  {
+    "name": "continuous_internal_valid",
+    "horizon": 2,
+    "reference": {
+      "kind": "continuous",
+      "schedule": [
+        [
+          "a",
+          "1",
+          "3"
+        ],
+        [
+          "b",
+          "2",
+          "2"
+        ]
+      ],
+      "valid": true,
+      "cost": 0,
+      "initial": "(= (x) -1)",
+      "curves": [
+        [
+          -1,
+          0
+        ],
+        [
+          -1,
+          0
+        ]
+      ],
+      "reset": "-1"
+    },
+    "domain": "continuous_internal_valid.domain.pddl",
+    "domain_sha256": "130768e42df3f6d5e11d83c7924b1217dcc4e2e23cedb6d8b54b2996cd9aa958",
+    "problem": "continuous_internal_valid.problem.pddl",
+    "problem_sha256": "764243ba87ae26e9d84d9ec7842af33c7bfeaba00e209a21b6385022786493a4"
+  }
+]

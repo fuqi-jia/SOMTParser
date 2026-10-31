@@ -1,0 +1,11 @@
+INFO {
+  TITLE:       "A simple arbiter"
+  DESCRIPTION: "One request, one grant"
+  SEMANTICS:   Mealy
+  TARGET:      Mealy
+}
+MAIN {
+  INPUTS  { r; }
+  OUTPUTS { g; }
+  GUARANTEE { G (r -> F g); }
+}

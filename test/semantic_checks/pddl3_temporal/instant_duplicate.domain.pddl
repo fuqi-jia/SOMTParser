@@ -1,0 +1,1 @@
+(define (domain d) (:requirements :adl :preferences :constraints :durative-actions :fluents) (:types item) (:constants i j - item) (:predicates (p) (q)) (:action a :parameters () :precondition (preference pref (p)) :effect (q)))

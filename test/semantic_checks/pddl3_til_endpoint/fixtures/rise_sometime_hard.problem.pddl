@@ -1,0 +1,5 @@
+(define (problem rise_sometime_hard) (:domain til-endpoint)
+  (:init (g) (at 10 (p)))
+  (:goal (g))
+  (:constraints (sometime (p)))
+  (:metric minimize total-time))

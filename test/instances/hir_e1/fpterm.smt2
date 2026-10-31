@@ -1,0 +1,5 @@
+(set-logic QF_BVFP)
+(declare-fun v () (_ BitVec 64))
+(declare-fun y () (_ FloatingPoint 11 53))
+(assert (fp.eq y (fp ((_ extract 63 63) v) ((_ extract 62 52) v) ((_ extract 51 0) v))))
+(check-sat)

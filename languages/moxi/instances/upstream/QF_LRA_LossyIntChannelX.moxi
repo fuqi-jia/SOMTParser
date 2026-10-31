@@ -1,0 +1,23 @@
+; ====NOT SUPPORTED========================
+; TODO: declare-datatype not yet supported!
+; ====NOT SUPPORTED========================
+(set-logic QF_LRA)
+
+(declare-datatype Event (par (X) (Absent) (Present (val X))))
+
+; An event-triggered channel that arbitrarily loses its input data
+(define-system LossyRealChannel
+    :input ((in (Event Real)))
+    :output ((out (Event Real)))
+    :inv (or (= out in) (= out Absent))
+)
+
+; Equivalent formulation using unconstrained local state
+(define-system LossyRealChannel
+    :input ((in (Event Real)))
+    :output ((out (Event Real)))
+    :local ((s Bool))
+    ; at all times, whether the input event is transmitted
+    ; or not depends on value of s
+    :inv (= out (ite s in Absent))
+)

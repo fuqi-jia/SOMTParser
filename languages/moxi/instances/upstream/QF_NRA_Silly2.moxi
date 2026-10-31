@@ -1,0 +1,27 @@
+(set-logic QF_NRA)
+
+(define-fun g1 () Real 100)
+
+(define-fun complex-sum ((x Real) (y Real) (z Real)) Real
+; let u1 = y * x, u2 = y * z in x * u1 + g1 + z * (u1 + u2 + 10)
+    (let ((u1 (* x y)) (u2 (* y z)))
+        (+ (* x u1) (+ g1 (* z (+ u1 (+ u2 10.5)))))
+    )
+)
+
+(define-system S
+    :input ((i1 Real) (i2 Real))
+    :output ((o Real))
+    :local ((l1 Real) (l2 Real))
+    :inv (= l1 (- i1 i2))
+    :init (and
+        (= l2 (complex-sum i1 i2 (- l1)))
+        (= o (* g1 l2))
+    )
+    :trans (let ((l3 (+ l1 l2)))
+        (and
+            (= l2' (complex-sum i1' i2 l3))
+            (= o' (complex-sum i1' i2' (- l3)))
+        )
+    )
+)

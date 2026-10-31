@@ -101,6 +101,14 @@ namespace SOMTParser{
         ~GlobalOptions() = default;
 
         bool setLogic(const std::string& logic_name) {
+            // HORN constrains clause shape, not the background theory: CHC-COMP
+            // has LIA, LRA, BV, array and datatype tracks under the same logic
+            // name. Parse it with every theory enabled while the CHC frontend
+            // validates the Horn grammar itself.
+            if (logic_name == "HORN") {
+                logic = "ALL";
+                return true;
+            }
             if( logic_name == "QF_ABV" || 
                 logic_name == "QF_ABVFP" ||
                 logic_name == "QF_ABVFPLRA" ||
@@ -249,6 +257,11 @@ namespace SOMTParser{
 
         std::string getLogic() const {
             return logic;
+        }
+
+        bool getGlobalDeclarations() const {
+            auto it = options.find("global-declarations");
+            return it != options.end() && it->second == "true";
         }
 
         void getValue(const std::string& key, const std::string& value) {

@@ -1,0 +1,11 @@
+(define (domain transport)
+  (:predicates (at ?x ?l) (road ?l1 ?l2))
+  (:task deliver :parameters (?p ?l))
+  (:action drive
+    :parameters (?t ?from ?to)
+    :precondition (and (at ?t ?from) (road ?from ?to))
+    :effect (and (at ?t ?to) (not (at ?t ?from))))
+  (:method m-deliver
+    :parameters (?p ?l)
+    :task (deliver ?p ?l)
+    :ordered-subtasks (and (drive ?p ?l ?l))))

@@ -1,0 +1,3 @@
+Let x be an integer.
+x should be reasonably small.
+Find a solution.

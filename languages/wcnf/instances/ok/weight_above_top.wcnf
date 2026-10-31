@@ -1,0 +1,8 @@
+c `top` is a MARKER, not a threshold: >= top is hard, and a weight strictly
+c ABOVE top is hard too. wcnf.md §2.2 draws the line against WBO, whose
+c `soft: T ;` is a hard admissibility BOUND -- an assignment whose cost reaches
+c T is not a solution at all. Translating either with the other's meaning
+c changes the answer.
+p wcnf 2 2 10
+99 1 0
+3 -2 0

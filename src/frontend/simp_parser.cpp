@@ -29,6 +29,16 @@
 #include "somtparser/core/timing.h"
 
 namespace {
+    // Legacy string helpers operate on serialized bytes. Fold only literals
+    // whose spelling is their character sequence; preserve other expressions
+    // for the solver instead of inspecting Unicode escape text as characters.
+    bool plainStringForByteFold(const std::shared_ptr<SOMTParser::DAGNode>& node) {
+        if (!node->isCStr()) return false;
+        for (unsigned char c : node->getStringLiteral()) {
+            if (c < 32 || c > 126 || c == '"' || c == '\\') return false;
+        }
+        return true;
+    }
     bool compareNodePtrLess(const std::shared_ptr<SOMTParser::DAGNode>& a,
                             const std::shared_ptr<SOMTParser::DAGNode>& b) {
         return a.get() < b.get();
@@ -544,7 +554,11 @@ namespace SOMTParser{
                     return p;
                 }
                 else if(p->isCReal()){
-                    return mkConstReal(toReal(p).floor());
+                    // to_int is Real -> Int, so the fold must produce an Int
+                    // constant (floor towards -inf). A Real constant here
+                    // mis-sorts the node and breaks every consumer that
+                    // requires an Int, e.g. (to_real (to_int x)).
+                    return mkConstInt(toReal(p).floor().toInteger());
                 }
                 return mkUnknown();
             }
@@ -562,7 +576,9 @@ namespace SOMTParser{
                     return mkTrue();
                 }
                 else if(p->isCReal()){
-                    return mkFalse();
+                    // is_int asks whether the VALUE is integral: (is_int 3.0)
+                    // is true, only a genuinely fractional literal is false.
+                    return toReal(p).isInteger() ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
@@ -679,31 +695,31 @@ namespace SOMTParser{
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_NORMAL:{
-                if(p->isCFP()) return fpNodeIsNormal(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsNormal(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_SUBNORMAL:{
-                if(p->isCFP()) return fpNodeIsSubnormal(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsSubnormal(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_ZERO:{
-                if(p->isCFP()) return fpNodeIsZero(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsZero(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_INF:{
-                if(p->isCFP()) return fpNodeIsInf(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsInf(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_NAN:{
-                if(p->isCFP()) return fpNodeIsNaN(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsNaN(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_NEG:{
-                if(p->isCFP()) return fpNodeIsNeg(p) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return fpNodeIsNeg(p) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_FP_IS_POS:{
-                if(p->isCFP()) return (!fpNodeIsNeg(p)) ? mkTrue() : mkFalse();
+                if(p->isCFP() && fpNodeToValue(p)) return (!fpNodeIsNaN(p) && !fpNodeIsNeg(p)) ? mkTrue() : mkFalse();
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_LEN:{
@@ -714,27 +730,26 @@ namespace SOMTParser{
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_TO_LOWER:{
-                if(p->isCStr()){
+                if(plainStringForByteFold(p)){
                     return mkConstStr(StringUtils::strToLower(p->toString()));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_TO_UPPER:{
-                if(p->isCStr()){
+                if(plainStringForByteFold(p)){
                     return mkConstStr(StringUtils::strToUpper(p->toString()));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_REV:{
-                if(p->isCStr()){
+                if(plainStringForByteFold(p)){
                     return mkConstStr(StringUtils::strRev(p->getStringLiteral()));
                 }
                 return mkUnknown();
             }
-            // `str.is_digit` holds for a ONE-CHARACTER string that is a digit,
-            // and for nothing else. It was sharing `str.to_int`'s test, so a
-            // longer run of digits satisfied it too and `(str.is_digit "77")`
-            // folded to true.
+            // `str.is_digit` is TRUE for a single-character string that is a
+            // digit, and false for everything else -- including a longer run of
+            // digits. It is not `str.to_int`'s test.
             case NODE_KIND::NT_STR_IS_DIGIT:{
                 if(p->isCStr()){
                     const std::string v = p->getStringLiteral();
@@ -752,14 +767,14 @@ namespace SOMTParser{
             }
             // **`str.to_int` returns -1; it does not fail.** SMT-LIB defines it
             // total: a string that is not a non-empty run of digits maps to -1,
-            // so `(str.to_int "abc")` is a well-formed term with a value.
-            // Raising an error turned a legal script into a parse failure.
+            // and `(str.to_int "abc")` is a perfectly well-formed term. Raising
+            // an error turned a legal script into a parse failure.
             //
             // It also read `toString()`, which renders a string constant WITH
-            // its quotes, so the digit test saw `"7"` rather than `7` and every
-            // literal took the error branch -- `(str.to_int "7")` included.
-            // `getStringLiteral()` is the accessor for the value, and the
-            // NT_STR_LEN case above was already using it.
+            // its quotes, so the digit test saw `"7"` and not `7` and every
+            // literal took the error branch -- including `(str.to_int "7")`.
+            // `getStringLiteral()` is the accessor for the value, and str.len
+            // beside it was already using it.
             case NODE_KIND::NT_STR_TO_INT:{
                 if(p->isCStr()){
                     const std::string v = p->getStringLiteral();
@@ -768,14 +783,15 @@ namespace SOMTParser{
                         if(c < '0' || c > '9'){ digits = false; break; }
                     }
                     if(!digits){ return mkConstInt(-1); }
-                    // Leading zeroes are digits, so "0007" is 7.
+                    // Leading zeroes are digits: "0007" is 7, which is what the
+                    // standard says and what a reader would expect.
                     try{
                         return mkConstInt(Integer(v));
                     }
                     catch(...){
                         // Too large for the integer type rather than malformed.
                         // Left unfolded, which is sound: the term keeps its
-                        // meaning and a solver may still reason about it.
+                        // meaning and the solver may still reason about it.
                         return mkUnknown();
                     }
                 }
@@ -785,7 +801,7 @@ namespace SOMTParser{
             // one-character string. Same two defects as str.to_int above -- an
             // error where the standard has a value, and the quoted rendering
             // where the value was wanted, which made `"a"` three characters
-            // long so no literal ever reached the folding branch.
+            // long so no literal ever took the folding branch.
             case NODE_KIND::NT_STR_TO_CODE:{
                 if(p->isCStr()){
                     const std::string v = p->getStringLiteral();
@@ -934,19 +950,29 @@ namespace SOMTParser{
                     }
                 }
                 else if(l->isArray() && r->isArray()){
-                    // Use canonical form to check array equality
-                    if(areArraysEqual(l, r)){
-                        return mkTrue();
-                    }
-                    else{
-                        // If canonical forms are different, check if it's due to variables
-                        // If either array contains variables, we can't determine equality
-                        if(arrayContainsVar(l) || arrayContainsVar(r)){
-                            return mkUnknown();
+                    if (areDefinitelyEqual(l, r)) { return mkTrue(); }
+                    // Canonical store maps are a complete decision procedure only
+                    // for concrete writes over an infinite index domain. Symbolic
+                    // indices may alias; symbolic values may agree. Finite domains
+                    // may be fully overwritten, hiding different default values.
+                    // In those cases preserve extensional equality for the solver.
+                    const auto concreteIntArray = [](std::shared_ptr<DAGNode> array) {
+                        const auto index = array->getSort()->getIndexSort();
+                        if (!index || !index->isInt()) { return false; }
+                        const auto literal = [](const std::shared_ptr<DAGNode>& value) {
+                            return value && (value->isCInt() || value->isTrue() || value->isFalse());
+                        };
+                        while (array && array->isStore()) {
+                            if (!array->getStoreIndex()->isCInt()
+                                || !literal(array->getStoreValue())) { return false; }
+                            array = array->getStoreArray();
                         }
-                        // Otherwise, arrays are definitely not equal
-                        return mkFalse();
+                        return array && array->isConstArray() && literal(array->getChild(0));
+                    };
+                    if (concreteIntArray(l) && concreteIntArray(r)) {
+                        return areArraysEqual(l, r) ? mkTrue() : mkFalse();
                     }
+                    return mkUnknown();
                 }
                 else if(l->isCFP() && r->isCFP()){
                     auto va = FloatingPointUtils::fpNodeToValue(l);
@@ -1390,19 +1416,19 @@ namespace SOMTParser{
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_PREFIXOF:{
-                if(l->isCStr() && r->isCStr()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(r)){
                     return StringUtils::strPrefixof(l->toString(), r->toString()) ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_SUFFIXOF:{
-                if(l->isCStr() && r->isCStr()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(r)){
                     return StringUtils::strSuffixof(l->toString(), r->toString()) ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_CHARAT:{
-                if(l->isCStr() && r->isCInt()){
+                if(plainStringForByteFold(l) && r->isCInt()){
                     return mkConstStr(StringUtils::strCharAt(l->toString(), toInt(r)));
                 }
                 return mkUnknown();
@@ -1413,30 +1439,30 @@ namespace SOMTParser{
             }
             case NODE_KIND::NT_STR_LT:{
                 if(l->isCStr() && r->isCStr()){
-                    return l->toString() < r->toString() ? mkTrue() : mkFalse();
+                    return l->getStringLiteral() < r->getStringLiteral() ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_LE:{
                 if(l->isCStr() && r->isCStr()){
-                    return l->toString() <= r->toString() ? mkTrue() : mkFalse();
+                    return l->getStringLiteral() <= r->getStringLiteral() ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_GT:{
                 if(l->isCStr() && r->isCStr()){ 
-                    return l->toString() > r->toString() ? mkTrue() : mkFalse();
+                    return l->getStringLiteral() > r->getStringLiteral() ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_GE:{
                 if(l->isCStr() && r->isCStr()){
-                    return l->toString() >= r->toString() ? mkTrue() : mkFalse();
+                    return l->getStringLiteral() >= r->getStringLiteral() ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_CONTAINS:{
-                if(l->isCStr() && r->isCStr()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(r)){
                     return StringUtils::strContains(l->toString(), r->toString()) ? mkTrue() : mkFalse();
                 }
                 return mkUnknown();
@@ -1857,31 +1883,31 @@ namespace SOMTParser{
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_SUBSTR:{
-                if(l->isCStr() && m->isCInt() && r->isCInt()){
+                if(plainStringForByteFold(l) && m->isCInt() && r->isCInt()){
                     return mkConstStr(StringUtils::strSubstr(l->toString(), toInt(m), toInt(r)));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_INDEXOF:{
-                if(l->isCStr() && m->isCStr() && r->isCInt()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(m) && r->isCInt()){
                     return mkConstInt(StringUtils::strIndexof(l->toString(), m->toString(), toInt(r)));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_UPDATE:{
-                if(l->isCStr() && m->isCInt() && r->isCStr()){
+                if(plainStringForByteFold(l) && m->isCInt() && plainStringForByteFold(r)){
                     return mkConstStr(StringUtils::strUpdate(l->toString(), toInt(m), r->toString()));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_REPLACE:{
-                if(l->isCStr() && m->isCStr() && r->isCStr()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(m) && plainStringForByteFold(r)){
                     return mkConstStr(StringUtils::strReplace(l->toString(), m->toString(), r->toString()));
                 }
                 return mkUnknown();
             }
             case NODE_KIND::NT_STR_REPLACE_ALL:{
-                if(l->isCStr() && m->isCStr() && r->isCStr()){
+                if(plainStringForByteFold(l) && plainStringForByteFold(m) && plainStringForByteFold(r)){
                     return mkConstStr(StringUtils::strReplaceAll(l->toString(), m->toString(), r->toString()));
                 }
                 return mkUnknown();
@@ -1923,18 +1949,13 @@ namespace SOMTParser{
                         return mkFalse();
                     }
                 }
-                else if(l->isArray() && m->isArray() && r->isArray()){
-                    // Use canonical form to check array equality
-                    if(areArraysEqual(l, m) && areArraysEqual(m, r)){
-                        return mkTrue();
-                    }
-                    else{
-                        return mkFalse();
-                    }
-                }
-                else if(simp_oper(NODE_KIND::NT_EQ, l, m)->isTrue() && simp_oper(NODE_KIND::NT_EQ, m, r)->isTrue()){
-                    return mkTrue();
-                }
+                // A failed structural array comparison means unknown when
+                // arrays are symbolic. Use the binary three-valued checks for
+                // the chain instead of folding nonidentical arrays to false.
+                const auto lm = simp_oper(NODE_KIND::NT_EQ, l, m);
+                const auto mr = simp_oper(NODE_KIND::NT_EQ, m, r);
+                if (lm->isFalse() || mr->isFalse()) { return mkFalse(); }
+                if (lm->isTrue() && mr->isTrue()) { return mkTrue(); }
                 return mkUnknown();
             }
             case NODE_KIND::NT_DISTINCT:
@@ -2174,15 +2195,11 @@ namespace SOMTParser{
                     auto rnd = getFPRoundingModeMpfr(p[2]);
                     auto param = p[3];
                     if(param->isCFP()){
-                        auto v = fpNodeToValue(param);
-                        if(v){
-                            mpfr_t m;
-                            mpfr_init2(m, static_cast<mpfr_prec_t>(target_sb + 16));
-                            v->toMpfr(m);
-                            auto rv = FloatingPointUtils::FPValue::fromMpfr(m, target_eb, target_sb);
-                            mpfr_clear(m);
-                            return mkConstFp(rv.toSMTFP(), target_eb, target_sb);
-                        }
+                        // Extraction at a new precision is not rounded by
+                        // fromMpfr. Preserve conversions until a format-aware
+                        // rounding implementation is available.
+                        if(param->getSort()->getExponentWidth() == target_eb
+                            && param->getSort()->getSignificandWidth() == target_sb) return param;
                     }
                     else if(param->isCReal() || param->isCInt()){
                         ensureNumberValue(param);

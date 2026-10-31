@@ -1,0 +1,5 @@
+1 sort bitvec 1
+2 constd 1 0
+3 state 1 s
+4 init 1 3 2
+5 justice 1 3

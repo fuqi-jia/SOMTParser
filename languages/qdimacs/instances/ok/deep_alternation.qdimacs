@@ -1,0 +1,8 @@
+c Four blocks, three alternations. Adjacent same-quantifier blocks would merge;
+c these do not, so this sits at the third level of the polynomial hierarchy.
+p cnf 4 1
+a 1 0
+e 2 0
+a 3 0
+e 4 0
+1 -2 3 -4 0

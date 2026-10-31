@@ -252,6 +252,24 @@ void test_signed_division_remainder_and_modulo(SOMTParser::ParserPtr& parser) {
     }
 }
 
+void test_signed_mod_divisor_sign(SOMTParser::ParserPtr& parser) {
+    using SOMTParser::BitVectorUtils;
+    using SOMTParser::Integer;
+    struct Case { int dividend; int divisor; int result; };
+    const Case cases[] = {{-7, 3, 2}, {7, -3, -2}, {-7, -3, -1},
+                          {7, 3, 1}, {-6, -3, 0}, {-7, 0, -7}};
+    for (unsigned width : {8U, 65U}) {
+        for (const auto& row : cases) {
+            const auto left = BitVectorUtils::intToBv(Integer(row.dividend), Integer(static_cast<int>(width)));
+            const auto right = BitVectorUtils::intToBv(Integer(row.divisor), Integer(static_cast<int>(width)));
+            const auto expected = BitVectorUtils::intToBv(Integer(row.result), Integer(static_cast<int>(width)));
+            VERIFY(BitVectorUtils::bvSmod(left, right) == expected);
+            const auto folded = parser->mkExpr("(bvsmod " + left + " " + right + ")");
+            VERIFY(folded && folded->isCBV() && folded->toString() == expected);
+        }
+    }
+}
+
 int main() {
     std::cout << "======= Bitvector Operations Test =======" << std::endl;
 
@@ -266,6 +284,7 @@ int main() {
     test_value_bv_operators_ir();
     test_bv_arithmetic_correctness(parser);
     test_bv_large_width_gmp_path(parser);
+    test_signed_mod_divisor_sign(parser);
 
     return 0;
 }

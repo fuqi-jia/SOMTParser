@@ -1,0 +1,7 @@
+language ESSENCE' 1.0
+letting N be 5
+find a : int(0..N)
+find b : int(0..N)
+such that
+    a + b <= N
+minimising a - b

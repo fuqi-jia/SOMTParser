@@ -1,0 +1,4 @@
+var 1..10: x;
+var 1..10: y;
+constraint int_lin_le([1, 1], [x, y], 12);
+solve maximize x;

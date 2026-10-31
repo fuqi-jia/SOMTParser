@@ -1,0 +1,6 @@
+<instance format="XCSP3" type="CSP">
+  <variables>
+    <array id="x" size="[2]"><domain for="x[0]">0..1</domain></array>
+  </variables>
+  <constraints><sum><list>x[]</list><condition>(eq,0)</condition></sum></constraints>
+</instance>

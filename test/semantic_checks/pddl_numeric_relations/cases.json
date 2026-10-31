@@ -1,0 +1,323 @@
+[
+  {
+    "name": "swap",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "2",
+      "(y)": "3"
+    },
+    "final": {
+      "(x)": "3",
+      "(y)": "2"
+    },
+    "satisfiable": true,
+    "metric_direction": "maximize",
+    "signed_metric": "-1",
+    "reason": "The goal forces step; both assignment RHS read the old state. Final x-y is 1; signed minimization cost is -1.",
+    "domain_sha256": "691aa9131ba819c12bfa7696927ace8dc1770a83eb6465b5adfd4be4a58bee13",
+    "problem_sha256": "4316237e014a7c94dc85429786ed722ac9bf6b14ee7e516591e34657376b6d45"
+  },
+  {
+    "name": "initialize",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "5"
+    },
+    "final": {
+      "(x)": "25/4",
+      "(y)": "5"
+    },
+    "satisfiable": true,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "Assign initializes previously undefined x from defined y+5/4; frame preserves y.",
+    "domain_sha256": "3e6c3615b38b01b6caa9aff487299bced4598ee7845f619bf0a0dd030d310eb2",
+    "problem_sha256": "55c159b359739b226dff74612b46615bbace0877039f81c9631db03e37b494a9"
+  },
+  {
+    "name": "relative_undefined",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "5"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step, whose relative increase requires an already defined x.",
+    "domain_sha256": "c1a96d67cf75f236e1b5b99bc7b01cdcb566984c9a50551a2d33541dce051763",
+    "problem_sha256": "55c159b359739b226dff74612b46615bbace0877039f81c9631db03e37b494a9"
+  },
+  {
+    "name": "undefined_not",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "5"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step; strict definedness makes not(x>0) undefined when x is undefined.",
+    "domain_sha256": "be1d888cb6088e39b310c2a3271bdacfd54834c2284d7eb0bf1bf162136f42f2",
+    "problem_sha256": "55c159b359739b226dff74612b46615bbace0877039f81c9631db03e37b494a9"
+  },
+  {
+    "name": "undefined_or",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "5"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step; strict Boolean definedness rejects the undefined numeric disjunct even beside true.",
+    "domain_sha256": "eb5869c3a1c75e2ac43578ff56bdd3467ae10e0eaaa46e8f11c24a80ad4ea36a",
+    "problem_sha256": "55c159b359739b226dff74612b46615bbace0877039f81c9631db03e37b494a9"
+  },
+  {
+    "name": "undefined_conditional",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "5"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step; its conditional guard x>0 must itself be defined.",
+    "domain_sha256": "bf6a0fa1596582131bc79df6eede0667fc74dcc6faca1c38dc0efd5556f3e122",
+    "problem_sha256": "55c159b359739b226dff74612b46615bbace0877039f81c9631db03e37b494a9"
+  },
+  {
+    "name": "inactive_division",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "4",
+      "(y)": "0"
+    },
+    "final": {
+      "(x)": "4",
+      "(y)": "0"
+    },
+    "satisfiable": true,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The source guard y=1 is false; the inactive RHS division is not required to be defined and both numeric cells frame.",
+    "domain_sha256": "c1dbdc54fb17fc0ff0cfe73d71fb86d2b95ad97209801d523ccfa41575bfac2e",
+    "problem_sha256": "e843c2bf8e24f8a1487b2d06b994323e05e38cd8fb722a0f90f3d643adb1fffe"
+  },
+  {
+    "name": "active_division",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "4",
+      "(y)": "0"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step and its unconditional 10/y assignment has a zero denominator.",
+    "domain_sha256": "aca597929749f182e001d23a0dc8b3e819c9222165f653587afa8ed07653ab65",
+    "problem_sha256": "e843c2bf8e24f8a1487b2d06b994323e05e38cd8fb722a0f90f3d643adb1fffe"
+  },
+  {
+    "name": "additive",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "-2",
+      "(y)": "0"
+    },
+    "final": {
+      "(x)": "-3/4",
+      "(y)": "0"
+    },
+    "satisfiable": true,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The two active additive effects accumulate: -2+3/2-1/4=-3/4; y frames.",
+    "domain_sha256": "3312fef7c895a10bc361d243272d7840b737b9155d13df85c4fec78fd395170f",
+    "problem_sha256": "d386ff887e58fa84ba6160972c2a1ce245a6bbc2308006c4f3f35fda0a4291c9"
+  },
+  {
+    "name": "scaling",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "-2",
+      "(y)": "0"
+    },
+    "final": {
+      "(x)": "-3",
+      "(y)": "0"
+    },
+    "satisfiable": true,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The same action scales old x by 3 and by reciprocal 2, yielding -3; y frames.",
+    "domain_sha256": "ee2c864cf2d04e34d5ba74e3a1987a8ed7ce60a4973c674469a4241bc4ba7d98",
+    "problem_sha256": "d386ff887e58fa84ba6160972c2a1ce245a6bbc2308006c4f3f35fda0a4291c9"
+  },
+  {
+    "name": "conflicting",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "0",
+      "(y)": "0"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step; simultaneous assignment and relative update of x violate numeric update compatibility.",
+    "domain_sha256": "79213a5ad0d50845167a086b8e844a67a6570f367d4c0698a3e2e2002bfaa579",
+    "problem_sha256": "9e825973cd2c8981e89097a8c10e596b7a43033ee84b399b92813f99a9fb0d9a"
+  },
+  {
+    "name": "duplicate",
+    "horizon": 1,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "0",
+      "(y)": "0"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces step; two active assignments to the same numeric cell violate the single-assignment rule, even with equal RHS.",
+    "domain_sha256": "a9b9aea9c7964e9349c07d7807c4bfd571fd57932a85ec8ab69a45f863518284",
+    "problem_sha256": "9e825973cd2c8981e89097a8c10e596b7a43033ee84b399b92813f99a9fb0d9a"
+  },
+  {
+    "name": "numeric_goal",
+    "horizon": 0,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": "2",
+      "(y)": "3"
+    },
+    "final": {
+      "(x)": "2",
+      "(y)": "3"
+    },
+    "satisfiable": true,
+    "metric_direction": "minimize",
+    "signed_metric": "5/2",
+    "reason": "At horizon zero the initial state already satisfies 2+1/2<3; the exact metric is (2+3)/2.",
+    "domain_sha256": "2d3d66aa04133e040cdc0a70a4dcf00fea7b7733ca39c5e96572bf2240b2b2b6",
+    "problem_sha256": "c76f34bc083bf7b1ab21d6c9f502c04328efc8d8f1158c2503c41001076c695e"
+  },
+  {
+    "name": "undefined_metric",
+    "horizon": 0,
+    "action": "(step)",
+    "fluents": [
+      "(x)",
+      "(y)"
+    ],
+    "initial": {
+      "(x)": null,
+      "(y)": "3"
+    },
+    "final": null,
+    "satisfiable": false,
+    "metric_direction": "minimize",
+    "signed_metric": null,
+    "reason": "At horizon zero the empty goal is true but metric x is undefined; there is no legal cost-bearing trajectory.",
+    "domain_sha256": "2d3d66aa04133e040cdc0a70a4dcf00fea7b7733ca39c5e96572bf2240b2b2b6",
+    "problem_sha256": "89dc19b084c5bc440b79c1895a5fc0344a0c5df7fed60b07ceb3178a233d6766"
+  },
+  {
+    "name": "quantified",
+    "horizon": 1,
+    "action": "(transfer)",
+    "fluents": [
+      "(fuel a)",
+      "(fuel b)"
+    ],
+    "initial": {
+      "(fuel a)": "2",
+      "(fuel b)": "-1"
+    },
+    "final": {
+      "(fuel a)": "3/2",
+      "(fuel b)": "-1"
+    },
+    "satisfiable": true,
+    "metric_direction": null,
+    "signed_metric": null,
+    "reason": "The done goal forces transfer; the source forall has two objects, and only fuel(a)>0 enables a decrement of 1/2.",
+    "domain_sha256": "10ed446c458e0a9309e141ec5617fd83b0a77e071f856abeafd88983c956aa92",
+    "problem_sha256": "c8be837a46bc3ad202ad782378eb8ad6b7e9215579a43091be5ebac5ca732942"
+  }
+]
