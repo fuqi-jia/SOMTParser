@@ -26,6 +26,18 @@ with `SOMTParser::languages`, and `somtparser.translate` in Python. There is no
 standalone converter executable or console script. Keep conversion/report
 policy in that library implementation and Python bindings limited to adapters.
 
+## Branch policy
+
+- `main` is the target for SMT-LIB/OMT parser and core SMT maintenance,
+  including correctness fixes, regression repairs and compiler/build
+  compatibility fixes. Base these changes on `origin/main` and target `main`.
+- `develop` is the development line for future technical work, including
+  language translation, new language frontends and related HIR/lowering
+  extensions. Base this work on `origin/develop` and target `develop`.
+- Port shared SMT fixes from `main` to `develop` when needed. Keep promotion
+  of future features from `develop` into `main` as a separate, scoped
+  integration.
+
 ## Build and validation
 
 Once a change is ready and necessary checks give reasonable confidence,
@@ -36,9 +48,10 @@ Python-version matrices, or dispatch/wait for wheel builds unless the user
 explicitly requests them for the current task. When full C++ validation is
 needed, use the `CI Tests` configuration in `.github/workflows/ci.yml`:
 Debug, all C++ tests and tools enabled, warnings as errors, two workers.
-This checkout uses `develop` on `origin`; do not force-push over unrelated
-remote changes. Report checks actually run and distinguish focused checks
-from full CI validation. Fix known failures before considering work complete.
+Choose the checkout and PR base using the branch policy above; do not
+force-push over unrelated remote changes. Report checks actually run and
+distinguish focused checks from full CI validation. Fix known failures before
+considering work complete.
 
 Dependencies: C++17 compiler, CMake 3.16+, GMP and MPFR. Python bindings also
 require Python 3.9+ and pybind11; packaging uses scikit-build-core.
