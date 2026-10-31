@@ -28,6 +28,7 @@
 #define VALUE_HEADER
 #include "somtparser/ir/number.h"
 #include "somtparser/ir/interval.h"
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 
