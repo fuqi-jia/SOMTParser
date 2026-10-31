@@ -120,6 +120,18 @@ static void testReset(bool command) {
     else VERIFY(parser.reset());
     VERIFY(options->getLogic() == "ALL");
     VERIFY(!parser.isDeclaredVariable("y"));
+
+    options->setKeepLet(false);
+    options->setExpandFunctions(true);
+    options->setExpandRecursiveFunctions(true);
+    options->setStrictSmtlib(true);
+    if (command) VERIFY(parser.parseStr("(reset)"));
+    else VERIFY(parser.reset());
+    VERIFY(parser.getOptions() == options);
+    VERIFY(!options->getKeepLet());
+    VERIFY(options->getExpandFunctions());
+    VERIFY(options->getExpandRecursiveFunctions());
+    VERIFY(options->getStrictSmtlib());
 }
 
 static void testContextResetAndSoftPositions() {

@@ -89,19 +89,16 @@ public:
     ScopedTermBindings& operator=(const ScopedTermBindings&) = delete;
     ~ScopedTermBindings() {
         symbols_->popLetScope();
-        for (auto it = saved_.rbegin(); it != saved_.rend(); ++it) {
-            if (it->second) { symbols_->registerQuantVar(it->first, it->second); }
-            else { symbols_->popQuantScope({it->first}); }
-        }
+        symbols_->popQuantScope(names_);
     }
     void bind(const std::string& name, const std::shared_ptr<DAGNode>& node) {
-        saved_.emplace_back(name, symbols_->getQuantVar(name));
+        names_.push_back(name);
         symbols_->registerQuantVar(name, node);
         symbols_->registerLet(name, node);
     }
 private:
     std::shared_ptr<SymbolManager> symbols_;
-    std::vector<std::pair<std::string, std::shared_ptr<DAGNode>>> saved_;
+    std::vector<std::string> names_;
 };
 
 } // namespace

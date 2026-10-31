@@ -161,18 +161,21 @@ void ParserContext::resetAll() {
     heap_data_sort.reset();
     heap_declaration_open = true;
     scope_stack_.clear();
-    setSymbolManager(std::make_shared<SymbolManager>());
-    setObjectiveManager(std::make_shared<ObjectiveManager>());
-    auto options = std::make_shared<GlobalOptions>();
+    if (auto symbols = getSymbolManager()) symbols->clear();
+    else setSymbolManager(std::make_shared<SymbolManager>());
+    if (auto objectives = getObjectiveManager()) objectives->clear();
+    else setObjectiveManager(std::make_shared<ObjectiveManager>());
+    GlobalOptions defaults;
     if (auto old = getOptions()) {
-        // Parser implementation policy is not an SMT-LIB script option.
-        // Preserve the embedding application's native DAG/expansion policy.
-        options->parsing_preserve_let = old->parsing_preserve_let;
-        options->expand_functions = old->expand_functions;
-        options->expand_recursive_functions = old->expand_recursive_functions;
-        options->strict_smtlib_fp = old->strict_smtlib_fp;
-    }
-    setOptions(std::move(options));
+        // Script options reset to defaults; policies set by the embedding API
+        // survive. Keep the options object visible to existing API holders.
+        if (!old->options.count("keep_let")) defaults.parsing_preserve_let = old->parsing_preserve_let;
+        if (!old->options.count("expand_functions")) defaults.expand_functions = old->expand_functions;
+        if (!old->options.count("expand_recursive_functions"))
+            defaults.expand_recursive_functions = old->expand_recursive_functions;
+        if (!old->options.count("strict_smtlib_fp")) defaults.strict_smtlib_fp = old->strict_smtlib_fp;
+        *old = std::move(defaults);
+    } else setOptions(std::make_shared<GlobalOptions>(std::move(defaults)));
 }
 
 // --- Named assertions ---

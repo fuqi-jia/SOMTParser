@@ -64,7 +64,7 @@ namespace SOMTParser{
         std::shared_ptr<Sort> result_sort;
         std::vector<std::string> binding_names;
         std::unordered_set<std::string> frame_names;
-        std::vector<std::pair<std::string, std::shared_ptr<DAGNode>>> saved_quant;
+        std::vector<std::string> quant_names;
         std::vector<std::shared_ptr<DAGNode>> annotations;
         std::vector<std::shared_ptr<DAGNode>> let_lists;
         // std::stack's deque keeps frame addresses stable. Consecutive let
@@ -92,15 +92,17 @@ namespace SOMTParser{
         std::stack<ExprFrame> st;
         st.push(ExprFrame());
 
+        const auto bindingKey = [](const std::string& name) {
+            return name.size() >= 2 && name.front() == '|' && name.back() == '|'
+                ? name.substr(1, name.size() - 2) : name;
+        };
         const auto closeScope = [&](ExprFrame& frame) {
             if (!frame.scope_pushed) return;
             getSymbolManager()->popLetScope();
             frame.scope_pushed = false;
-            for (auto it = frame.saved_quant.rbegin(); it != frame.saved_quant.rend(); ++it) {
-                if (it->second) getSymbolManager()->registerQuantVar(it->first, it->second);
-                else getSymbolManager()->popQuantScope({it->first});
-            }
-            frame.saved_quant.clear();
+            getSymbolManager()->popQuantScope(frame.quant_names);
+            frame.quant_names.clear();
+            frame.frame_names.clear();
         };
         const auto restoreFrame = [&](ExprFrame& frame) {
             closeScope(frame);
@@ -118,7 +120,7 @@ namespace SOMTParser{
         };
         const auto bindQuant = [&](ExprFrame& frame, const std::string& name,
                                    const std::shared_ptr<DAGNode>& node) {
-            frame.saved_quant.emplace_back(name, getSymbolManager()->getQuantVar(name));
+            frame.quant_names.push_back(name);
             getSymbolManager()->registerQuantVar(name, node);
             getSymbolManager()->registerLet(name, node);
         };
@@ -346,12 +348,16 @@ namespace SOMTParser{
                         while (*bufptr != ')') {
                             parseLpar();
                             const auto name = getSymbol();
+                            if (!frame.frame_names.insert(bindingKey(name)).second)
+                                err_mul_decl(name, line_number);
                             const auto sort = parseSort();
                             auto var = getNodeManager()->createNode(sort, NODE_KIND::NT_QUANT_VAR, name);
                             bindQuant(frame, name, var);
                             frame.oper_params.push_back(std::move(var));
                             parseRpar();
                         }
+                        if (frame.oper_params.empty())
+                            err_all(ERROR_TYPE::ERR_PARAM_MIS, "empty quantifier binder list", line_number);
                         parseRpar();
                         frame.state = FrameState::QuantBody;
                         st.emplace();
@@ -506,7 +512,7 @@ namespace SOMTParser{
                     parseLpar();
                     frame.binding_line = line_number;
                     auto name = getSymbol();
-                    if (!frame.frame_names.insert(name).second)
+                    if (!frame.frame_names.insert(bindingKey(name)).second)
                         err_sym_mis("Duplicate variable binding: " + name, frame.binding_line);
                     frame.binding_names.push_back(std::move(name));
                     frame.state = FrameState::LetBindingValue;
