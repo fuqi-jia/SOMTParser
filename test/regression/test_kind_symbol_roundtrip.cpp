@@ -35,7 +35,7 @@ namespace {
 
 // Kinds that deliberately print a symbol oper_key_map resolves to a *different*
 // kind.  A shared symbol is only acceptable when the parser can recover the
-// right kind from the term itself; each entry below records how, and each was
+// right operator semantics from the term itself; each entry below records how, and each was
 // checked by building the term, dumping it, re-parsing, and confirming the kind
 // came back unchanged.  NT_STR_INDEXOF_REG is deliberately absent: it shared
 // "str.indexof" with an operator of a different arity, so nothing could have
@@ -45,6 +45,12 @@ const std::vector<std::pair<NODE_KIND, const char*>> kSharedByDesign = {
     // negation, two or more is subtraction.  Verified: (- x) round-trips as
     // NT_NEG and (- x y) as NT_SUB.
     {NODE_KIND::NT_NEG, "arity: 1 argument is negation, 2+ is subtraction"},
+
+    // The legacy internal signed builder and the SMT-LIB 2.7 signed builder
+    // have identical semantics. The source spelling bv2int is UNSIGNED, so it
+    // cannot serialize the internal signed operator. Independent solver tests
+    // cover this alias through HIR/CryptoLine and constant/symbolic inputs.
+    {NODE_KIND::NT_BV_TO_INT, "signed internal synonym of NT_SBV_TO_INT"},
 
     // Sort-specialised variants of = and distinct.  The parser never builds
     // them -- (= a b) on Bool parses to NT_EQ, not NT_EQ_BOOL -- so they are
@@ -116,6 +122,6 @@ int main() {
     // mismatches empty; require the property to have been exercised.
     VERIFY(checked >= 100);
 
-    std::cout << "Every operator kind prints a symbol that resolves back to it.\n";
+    std::cout << "Every operator kind prints a symbol with the same operator semantics.\n";
     return 0;
 }

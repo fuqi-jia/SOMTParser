@@ -1,6 +1,7 @@
 name: CI Tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main, master, develop ]
     paths:
@@ -16,6 +17,8 @@ on:
       - '**.pyi'
       - 'setup.py'
       - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'test/run_all_tests.sh'
       - '.github/workflows/**'
   pull_request:
     branches: [ main, master, develop ]
@@ -32,7 +35,18 @@ on:
       - '**.pyi'
       - 'setup.py'
       - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'test/run_all_tests.sh'
       - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  SOMTPARSER_BUILD_JOBS: 2
+  SOMTPARSER_WARNINGS_AS_ERRORS: "ON"
+  CMAKE_ARGS: -DSOMTPARSER_WARNINGS_AS_ERRORS=ON
 
 jobs:
   test:
@@ -113,9 +127,8 @@ jobs:
     - name: Build and install the package
       run: |
         python -m pip install --upgrade pip
-        pip install .
+        python -m pip install ".[test,benchmark]" pytest-xdist
 
     - name: Run the Python test suite
       run: |
-        pip install pytest
-        pytest test/python -q
+        python -W error -m pytest test/python -q -n 2 --dist loadscope

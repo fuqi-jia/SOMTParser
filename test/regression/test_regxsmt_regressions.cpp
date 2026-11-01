@@ -2,8 +2,27 @@
 #include "test_helpers.h"
 
 #include <functional>
+#include <algorithm>
+#include <fstream>
+#include <filesystem>
+#include <cstdint>
 
 using namespace SOMTParser;
+
+static void verifyRange(const Command& command, const std::string& source) {
+    VERIFY(command.range.end.offset >= command.range.begin.offset);
+    for (const auto position : {command.range.begin, command.range.end}) {
+        VERIFY(position.offset <= source.size());
+        VERIFY(position.line == 1 + static_cast<size_t>(std::count(
+            source.begin(), source.begin() + position.offset, '\n')));
+        const auto newline = position.offset ? source.rfind('\n', position.offset - 1)
+                                             : std::string::npos;
+        VERIFY(position.column == position.offset -
+            (newline == std::string::npos ? 0 : newline + 1) + 1);
+    }
+    VERIFY(source.substr(command.range.begin.offset,
+                         command.range.end.offset - command.range.begin.offset) == command.original);
+}
 
 int main() {
     {
@@ -36,6 +55,49 @@ int main() {
         for (const auto& assertion : parser.getAssertions()) {
             VERIFY(assertion->isTrue());
         }
+    }
+
+    {
+        // Reusing one parser must reset its source-position cursor for every
+        // input entry point. Include CRLF, same-line commands, and byte columns.
+        Parser parser;
+        parser.setCommandLogging(true);
+        const std::string first = "; é\r\n  (assert\n true) (check-sat)\n";
+        VERIFY(parser.parseStr(first));
+        for (const auto& command : parser.getScript().commands()) { verifyRange(command, first); }
+        auto begin = parser.getScript().size();
+        const std::string second = "\n\n(assert true)(check-sat)";
+        VERIFY(parser.parseStr(second));
+        for (size_t i = begin; i < parser.getScript().size(); ++i) { verifyRange(parser.getScript()[i], second); }
+        const std::string third = " ; comment\n(assert true)\n(check-sat)";
+        VERIFY(parser.loadStr(third));
+        verifyRange(parser.nextCommand(), third);
+        verifyRange(parser.nextCommand(), third);
+        parser.nextCommand(); // consume EOF and release the incremental buffer
+
+        const auto path = std::filesystem::temp_directory_path() /
+            ("somt-position-" + std::to_string(reinterpret_cast<std::uintptr_t>(&parser)) + ".smt2");
+        const std::string file_source = "(assert true)\n\n  (check-sat)";
+        { std::ofstream file(path); file << file_source; }
+        begin = parser.getScript().size();
+        VERIFY(parser.parse(path.string()));
+        std::filesystem::remove(path);
+        for (size_t i = begin; i < parser.getScript().size(); ++i) { verifyRange(parser.getScript()[i], file_source); }
+    }
+
+    {
+        // Many commands on one line exercise column tracking without assuming
+        // line breaks between commands. No wall-clock assertion is needed.
+        Parser parser;
+        parser.setCommandLogging(true);
+        std::string source;
+        constexpr size_t count = 12000;
+        for (size_t i = 0; i < count; ++i) { source += "(assert true)"; }
+        VERIFY(parser.parseStr(source));
+        VERIFY(parser.getScript().size() == count);
+        verifyRange(parser.getScript()[0], source);
+        verifyRange(parser.getScript()[count - 1], source);
+        VERIFY(parser.getScript()[count - 1].range.end.column == source.size() + 1);
     }
 
     {

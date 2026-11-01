@@ -12,6 +12,16 @@ option(SOMTPARSER_WARNINGS_AS_ERRORS "Treat SOMTParser warnings as errors" OFF)
 option(SOMTPARSER_ENABLE_TIMING "Enable the timing profiler" OFF)
 option(BUILD_PYTHON "Build the Python bindings module" OFF)
 
+# Apply to every project target (core, tests and bindings),
+# without exporting compiler policy to applications linking the library.
+if(SOMTPARSER_WARNINGS_AS_ERRORS)
+    if(MSVC)
+        add_compile_options(/WX)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-Werror)
+    endif()
+endif()
+
 if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
@@ -73,9 +83,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wno-unused-but-set-variable
         -Wno-unused-value
         -Wno-unused-local-typedefs)
-    if(SOMTPARSER_WARNINGS_AS_ERRORS)
-        target_compile_options(somtparser PRIVATE -Werror)
-    endif()
 endif()
 
 if(SOMTPARSER_BUILD_TESTS)
@@ -115,7 +122,19 @@ install(FILES
 if(BUILD_PYTHON)
     find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
     find_package(pybind11 CONFIG REQUIRED)
-    pybind11_add_module(_somtparser python/bindings.cpp)
+    # Disable automatic LTO for the registration wrapper.
+    pybind11_add_module(_somtparser NO_EXTRAS python/bindings.cpp)
+    set_property(TARGET _somtparser PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+    # pybind11 registration templates can exceed COFF's 65,279-section limit
+    # in the wrapper. Use extended objects on
+    # MSVC; this changes object storage, not warning policy or generated APIs.
+    if(MSVC)
+        target_compile_options(_somtparser PRIVATE /bigobj)
+    endif()
+    # Numeric/frontend execution remains in the normally optimized core library;
+    # aggressive optimization of registration glue is costly.
+    target_compile_options(_somtparser PRIVATE
+        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:GNU,Clang,AppleClang>>:-O1>)
     target_link_libraries(_somtparser PRIVATE SOMTParser::somtparser)
-    install(TARGETS _somtparser LIBRARY DESTINATION .)
+    install(TARGETS _somtparser LIBRARY DESTINATION . COMPONENT Python)
 endif()

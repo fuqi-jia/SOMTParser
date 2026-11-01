@@ -31,6 +31,7 @@
 #include "somtparser/core/kind.h"
 #include "somtparser/core/asserting.h"
 
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <memory>
@@ -74,13 +75,16 @@ namespace SOMTParser{
             std::vector<DtSelector> selectors;
         };
         std::shared_ptr<std::vector<DtConstructor>> dt_constructors; // nullptr if not DT
+        // Greatest-fixed-point declarations must survive every parse/lift/dump.
+        bool coinductive = false;
         Sort(SORT_KIND kind, std::string name, size_t arity, std::vector<std::shared_ptr<Sort>> children): kind(kind), name(name), arity(arity), children(children) {}
         Sort(SORT_KIND kind, std::string name, size_t arity): kind(kind), name(name), arity(arity) {}
         Sort(SORT_KIND kind, std::string name): kind(kind), name(name), arity(0) {}
         Sort(SORT_KIND kind): kind(kind), name(""), arity(0) {}
         Sort(std::string name): kind(SORT_KIND::SK_UNKNOWN), name(name), arity(0) {}
         Sort(): kind(SORT_KIND::SK_UNKNOWN), name(""), arity(0) {}
-        Sort(const Sort& other): kind(other.kind), name(other.name), arity(other.arity), children(other.children), dt_constructors(other.dt_constructors) {}
+        ~Sort() noexcept;
+        Sort(const Sort& other): kind(other.kind), name(other.name), arity(other.arity), children(other.children), dt_constructors(other.dt_constructors), coinductive(other.coinductive) {}
 
 
         // check the type of the sort
@@ -155,147 +159,15 @@ namespace SOMTParser{
             return hasDtConstructor(ctor_name);
         }
 
-        // compare two sorts
-        bool operator==(const Sort& other) const {
-            // same sort name and arity -- and, for a sort constructor applied
-            // to arguments, the same arguments.
-            //
-            // `(declare-sort P 1)` makes P a sort CONSTRUCTOR, so `(P Int)` and
-            // `(P Bool)` are two sorts, exactly as `(Array Int Int)` and
-            // `(Array Int Bool)` are. parseSort already instantiates them --
-            // it clones the declared sort and fills `children` with the
-            // arguments -- and this comparison then ignored `children` and
-            // reported the two equal. `(= x y)` across them type-checked, so a
-            // script the standard forbids parsed and translated with no
-            // diagnostic. The array and set branches below compare their
-            // children for this reason; a declared constructor needs it too.
-            //
-            // A PARAMETRIC DATATYPE needs the same treatment, for the same
-            // reason and with the same consequence. `(declare-datatypes ((L 1))
-            // ((par (X) ...)))` makes L a sort constructor, so `(L Int)` and
-            // `(L Bool)` are two sorts; comparing by name alone let a value of
-            // one be used where the other was declared. An arity-0 datatype has
-            // no children and is unaffected.
-            if((isDef() || isDec() || isDatatype())
-               && (other.isDef() || other.isDec() || other.isDatatype())
-               && name == other.name && arity == other.arity){
-                if(children.size() != other.children.size()) return false;
-                for(size_t i = 0; i < children.size(); i++){
-                    if(!children[i] || !other.children[i]){
-                        if(children[i] != other.children[i]) return false;
-                        continue;
-                    }
-                    if(!(*children[i] == *other.children[i])) return false;
-                }
-                return true;
-            }
-
-            // int or real
-            if((isInt() && other.isIntOrReal()) || (isIntOrReal() && other.isInt())){
-                return true;
-            }
-            else if((isReal() && other.isIntOrReal()) || (isIntOrReal() && other.isReal())){
-                return true;
-            }
-
-            // floating point
-            else if(isFp() && other.isFp()){
-                // For floating point types, compare exponent and significand widths
-                return getExponentWidth() == other.getExponentWidth() &&
-                    getSignificandWidth() == other.getSignificandWidth();
-            }
-
-            // bit-vectors: widths live in children, not in name/arity
-            else if(isBv() && other.isBv()){
-                return getBitWidth() == other.getBitWidth();
-            }
-
-            // arrays: compare index and element sorts recursively
-            else if(isArray() && other.isArray()){
-                if(children.size() != other.children.size()){
-                    return false;
-                }
-                for(size_t i = 0; i < children.size(); i++){
-                    if(!children[i] || !other.children[i]){
-                        if(children[i] != other.children[i]) return false;
-                        continue;
-                    }
-                    if(!(*children[i] == *other.children[i])) return false;
-                }
-                return true;
-            }
-
-            // other sorts
-            else{
-                return kind == other.kind && name == other.name && arity == other.arity;
-            }
-        }
+        // Nominal datatype/declared-sort identity, structural container
+        // arguments, and IntOrReal compatibility are compared iteratively.
+        bool operator==(const Sort& other) const;
         bool operator!=(const Sort& other) const {
             return !(*this == other);
         }
 
-        // print the sort
-        std::string toString() const {
-            switch (kind) {
-                case SORT_KIND::SK_BOOL: return "Bool";
-                case SORT_KIND::SK_INT: return "Int";
-                case SORT_KIND::SK_REAL: return "Real";
-                case SORT_KIND::SK_BV:
-                    return "(_ BitVec " + std::to_string(children[0]->arity) + ")";
-                case SORT_KIND::SK_FP:
-                    return "(_ FloatingPoint " + std::to_string(children[0]->arity) + " " + std::to_string(children[1]->arity) + ")";
-                case SORT_KIND::SK_STR: return "String";
-                case SORT_KIND::SK_ARRAY: return "(Array " + children[0]->toString() + " " + children[1]->toString() + ")";
-                // A PARAMETRIC datatype applied to arguments must print them:
-                // `(L X)` is not `L`. SK_DEC below already does this, and a
-                // datatype sort constructor was left returning its bare name --
-                // so `(tl (L X))` dumped as `(tl L)`, a constructor at the wrong
-                // arity, which nothing else reads.
-                case SORT_KIND::SK_DATATYPE: {
-                    if(name.empty()) return "Datatype";
-                    if(children.empty()) return name;
-                    std::string s = "(" + name;
-                    for(const auto& ch : children) s += " " + (ch ? ch->toString() : "?");
-                    return s + ")";
-                }
-                case SORT_KIND::SK_SET: return "Set";
-                case SORT_KIND::SK_RELATION: return "Relation";
-                case SORT_KIND::SK_BAG: return "Bag";
-                case SORT_KIND::SK_SEQ: return "Sequence";
-                case SORT_KIND::SK_TUPLE: {
-                    // (Tuple T1 ... Tn); the nullary tuple sort is UnitTuple.
-                    if(children.empty()) return "UnitTuple";
-                    std::string s = "(Tuple";
-                    for(const auto& ch : children) s += " " + ch->toString();
-                    return s + ")";
-                }
-                case SORT_KIND::SK_UF: return "UF";
-                // The regular-expression sort is spelled RegLan in SMT-LIB;
-                // base_parser reads that spelling, so printing anything else
-                // made our own output unparsable by us.
-                case SORT_KIND::SK_REG: return "RegLan";
-                case SORT_KIND::SK_EXT: return "ExtReal";
-                case SORT_KIND::SK_NAT: return "Natural";
-                case SORT_KIND::SK_RAND: return "Random";
-                case SORT_KIND::SK_INTOREAL: return "IntOrReal";
-                case SORT_KIND::SK_ALGEBRAIC: return "Algebraic";
-                case SORT_KIND::SK_TRANSCENDENTAL: return "Transcendental";
-                // An applied sort constructor prints WITH its arguments.
-                // Printing the bare name emitted `(declare-fun x () P)` for a P
-                // declared at arity 1 -- a sort constructor used with no
-                // arguments, which this parser happens to read back and no
-                // other tool accepts.
-                case SORT_KIND::SK_DEC:
-                case SORT_KIND::SK_DEF: {
-                    if(children.empty()) return name;
-                    std::string s = "(" + name;
-                    for(const auto& ch : children) s += " " + (ch ? ch->toString() : "?");
-                    return s + ")";
-                }
-                case SORT_KIND::SK_ROUNDING_MODE: return "RoundingMode";
-                default: return "Unknown";
-            }
-        }
+        // Iterative rendering follows children, not datatype selectors.
+        std::string toString() const;
 
         size_t getBitWidth() const {
             condAssert(kind == SORT_KIND::SK_BV, "Cannot get bit width of non-bitvector sort");
@@ -323,10 +195,20 @@ namespace SOMTParser{
             return children[0];
         }
 
+        /** The element sort of an (Array I E) or a (Set E).
+         *
+         *  Both readings are "what this container holds", and they live at
+         *  different child positions: an array's value is children[1] because
+         *  children[0] is the index; a set has only the element. Leaving this
+         *  array-only made every set builder that asked for it throw, and
+         *  because Parser::parseStr catches, the failure surfaced as a silent
+         *  `parse ok = 0` with no message. */
         std::shared_ptr<Sort> getElemSort() const {
-            condAssert(kind == SORT_KIND::SK_ARRAY, "Cannot get element sort of non-array sort");
-            if (children.size() < 2 || !children[1]) return nullptr;
-            return children[1];
+            condAssert(kind == SORT_KIND::SK_ARRAY || kind == SORT_KIND::SK_SET,
+                       "Cannot get element sort of this sort");
+            const size_t at = (kind == SORT_KIND::SK_ARRAY) ? 1 : 0;
+            if (children.size() <= at || !children[at]) return nullptr;
+            return children[at];
         }
         
         std::shared_ptr<Sort> getParamSort(size_t index) const {
@@ -352,21 +234,9 @@ namespace SOMTParser{
             return *this == *other;
         }
 
-        // Hash function for Sort deduplication
-        size_t hash() const {
-            size_t result = std::hash<int>{}(static_cast<int>(kind));
-            result ^= std::hash<std::string>{}(name) + 0x9e3779b9 + (result << 6) + (result >> 2);
-            result ^= std::hash<size_t>{}(arity) + 0x9e3779b9 + (result << 6) + (result >> 2);
-            
-            // Hash children
-            for (const auto& child : children) {
-                if (child) {
-                    result ^= child->hash() + 0x9e3779b9 + (result << 6) + (result >> 2);
-                }
-            }
-            
-            return result;
-        }
+        // Preserves the structural hash, evaluating shared children once.
+        size_t hash() const;
+
     };
 
     // Sort Manager for managing and deduplicating Sort instances
@@ -395,6 +265,8 @@ namespace SOMTParser{
             std::shared_ptr<Sort> createBVSort(size_t width);
             std::shared_ptr<Sort> createFPSort(size_t exp, size_t sig);
             std::shared_ptr<Sort> createArraySort(std::shared_ptr<Sort> index, std::shared_ptr<Sort> elem);
+            /** (Set T) -- a finite set of T. The element sort is children[0]. */
+            std::shared_ptr<Sort> createSetSort(std::shared_ptr<Sort> elem);
             /** (Tuple T1 ... Tn); an empty field list yields the unit tuple sort. */
             std::shared_ptr<Sort> createTupleSort(const std::vector<std::shared_ptr<Sort>>& fields);
             std::shared_ptr<Sort> createDatatypeSort(const std::string& name,

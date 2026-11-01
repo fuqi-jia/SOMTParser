@@ -112,6 +112,8 @@ public:
     std::vector<std::vector<std::shared_ptr<DAGNode>>> assumptions;
     std::vector<std::shared_ptr<DAGNode>> soft_assertions;
     std::vector<std::shared_ptr<DAGNode>> soft_weights;
+    // Number of explicit objectives preceding each soft assertion in the input.
+    std::vector<size_t> soft_objective_positions;
     std::unordered_map<std::string, std::unordered_set<size_t>> soft_assertion_groups;
     std::vector<std::shared_ptr<DAGNode>> split_lemmas;
 
@@ -143,7 +145,7 @@ public:
     /** The name bound to `node`, or nullptr. Valid until named_assertions changes. */
     const std::string* getAssertionName(const std::shared_ptr<DAGNode>& node) const;
 
-    // Helpers to record additions in the current scope (no-op if no scope is active)
+    // Declaration helpers do not record global declarations for removal by pop.
     void registerVarInScope(const std::string& name);
     void registerFunInScope(const std::string& name);
     void registerSortInScope(const std::string& name);

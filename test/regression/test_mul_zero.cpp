@@ -87,11 +87,36 @@ int main() {
         VERIFY(p->mkAdd(x, p->mkConstInt(0))->toString() == "x");
     }
 
+    // ---- A constant-zero sum retains its operand sort. ---------------------
+    for(const std::string logic : {"ALL", "AUFLIRA", "QF_LIA"}) {
+        ParserPtr p = newParser();
+        p->setOption("logic", logic);
+        const auto zero = p->mkConstInt(0);
+        const auto sum = p->mkAdd({zero, zero, zero});
+        VERIFY(sum->isCInt());
+        VERIFY(sum->toString() == "0");
+        VERIFY(p->assert(p->mkEq(sum, zero)));
+    }
+    {
+        ParserPtr p = newParser();
+        const auto zero = p->mkConstReal(0.0);
+        VERIFY(p->mkAdd(zero, zero)->isCReal());
+        VERIFY(p->mkAdd(p->mkConstInt(0), zero)->isCReal());
+    }
+
     // ---- One is still the multiplicative identity. -------------------------
     {
         ParserPtr p = newParser();
         const auto x = p->mkVarInt("x");
         VERIFY(p->mkMul(x, p->mkConstInt(1))->toString() == "x");
+        // When every factor is one, simplification has no surviving operand
+        // from which to copy a sort. The original operands still determine it;
+        // the default `ALL` logic does not.
+        const auto int_one = p->mkMul(p->mkConstInt(1), p->mkConstInt(1));
+        VERIFY(int_one->toString() == "1");
+        VERIFY(int_one->isCInt());
+        const auto real_one = p->mkMul(p->mkConstReal(1.0), p->mkConstReal(1.0));
+        VERIFY(real_one->isCReal());
     }
 
     // ---- The zero's sort follows the operands, not the logic. --------------

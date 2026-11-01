@@ -2,7 +2,8 @@
 
 from enum import Enum
 from fractions import Fraction
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from os import PathLike
+from typing import Iterator, List, Mapping, Optional, Sequence, TextIO, Tuple, Union, overload
 
 __version__: str
 
@@ -40,6 +41,7 @@ class CmdType(Enum):
     DECLARE_FUN: CmdType
     DECLARE_SORT: CmdType
     DECLARE_DATATYPES: CmdType
+    DECLARE_CODATATYPES: CmdType
     DEFINE_FUN: CmdType
     DEFINE_FUN_REC: CmdType
     DEFINE_FUNS_REC: CmdType
@@ -322,6 +324,10 @@ class Command:
     @property
     def type(self) -> CmdType: ...
     @property
+    def index(self) -> int: ...
+    @property
+    def original(self) -> str: ...
+    @property
     def line_number(self) -> int: ...
     @property
     def expr(self) -> Optional[Node]: ...
@@ -341,6 +347,8 @@ class Command:
     def logic(self) -> str: ...
     @property
     def value_terms(self) -> List[Node]: ...
+    @property
+    def assumptions(self) -> List[Node]: ...
     @property
     def keyword(self) -> str: ...
     @property
@@ -390,6 +398,8 @@ class Parser:
     def declared_variables(self) -> List[Node]: ...
     @property
     def functions(self) -> List[Node]: ...
+    @property
+    def uninterpreted_sorts(self) -> List[str]: ...
     @property
     def logic(self) -> str: ...
     @property

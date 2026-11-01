@@ -10,6 +10,29 @@ namespace SOMTParser {
 
 SymbolManager::SymbolManager() = default;
 
+void SymbolManager::clear() {
+    let_key_map_.clear();
+    let_scope_backup_.clear();
+    let_scope_checkpoints_.clear();
+    fun_key_map_.clear();
+    recursive_definitions_.clear();
+    fun_var_map_.clear();
+    sort_key_map_.clear();
+    quant_var_map_.clear();
+    var_names_.clear();
+    temp_var_counter_ = 0;
+    temp_var_names_.clear();
+    placeholder_var_names_.clear();
+    function_names_.clear();
+    function_names_seen_.clear();
+    rec_fun_groups_.clear();
+    rec_fun_group_of_.clear();
+    static_functions_.clear();
+    sort_order_.clear();
+    var_order_.clear();
+    temp_var_order_.clear();
+}
+
 void SymbolManager::reserve(size_t capacity) {
     let_key_map_.reserve(capacity);
     let_scope_backup_.reserve(capacity);
@@ -26,11 +49,6 @@ void SymbolManager::reserve(size_t capacity) {
 }
 
 namespace {
-std::string bindingKey(const std::string& name) {
-    return name.size() > 2 && name.front() == '|' && name.back() == '|'
-        ? name.substr(1, name.size() - 2) : name;
-}
-
 
 /**
  * A lookup that treats `foo` and `|foo|` as the same key.
@@ -66,14 +84,19 @@ typename Map::mapped_type findEitherSpelling(const Map& m, const std::string& na
     return it != m.end() ? it->second : nullptr;
 }
 
+std::string bindingName(const std::string& name) {
+    return name.size() >= 2 && name.front() == '|' && name.back() == '|'
+        ? name.substr(1, name.size() - 2) : name;
+}
+
 }  // namespace
 
 std::shared_ptr<DAGNode> SymbolManager::resolveSymbol(const std::string& name, const ResolveScope& scope) const {
-    // The resolution ORDER is unchanged and is documented in the header; only
-    // the lookup within each step now accepts either spelling.
     if (auto n = findEitherSpelling(placeholder_var_names_, name)) { return n; }
-    if (scope.check_let) {
-        if (auto n = findEitherSpelling(let_key_map_, name)) { return n; }
+    if (auto n = findEitherSpelling(let_key_map_, name)) {
+        // Quantifiers/patterns also push this stack. Their lexical scope can
+        // be active without the parser being in a let expression.
+        if (scope.check_let || n->isQuantVar()) { return n; }
     }
     if (scope.in_quantifier_scope) {
         if (auto n = getQuantVar(name)) return n;
@@ -86,8 +109,8 @@ std::shared_ptr<DAGNode> SymbolManager::resolveSymbol(const std::string& name, c
 
 std::shared_ptr<DAGNode> SymbolManager::resolveTerm(const std::string& name, const ResolveScope& scope) const {
     if (auto n = findEitherSpelling(placeholder_var_names_, name)) { return n; }
-    if (scope.check_let) {
-        if (auto n = findEitherSpelling(let_key_map_, name)) { return n; }
+    if (auto n = findEitherSpelling(let_key_map_, name)) {
+        if (scope.check_let || n->isQuantVar()) { return n; }
     }
     // Function parameters (fun_var) are term bindings inside function bodies
     if (scope.in_quantifier_scope) {
@@ -139,12 +162,12 @@ void SymbolManager::popLetScope() {
 }
 
 void SymbolManager::popLetScope(const std::vector<std::string>& keys) {
-    for (const auto& k : keys) let_key_map_.erase(bindingKey(k));
+    for (const auto& k : keys) let_key_map_.erase(bindingName(k));
 }
 
 void SymbolManager::registerLet(const std::string& name, const std::shared_ptr<DAGNode>& node) {
     LetBackup backup;
-    const auto key = bindingKey(name);
+    const std::string key = bindingName(name);
     backup.name = key;
     auto it = let_key_map_.find(key);
     if (it != let_key_map_.end()) {
@@ -158,7 +181,7 @@ void SymbolManager::registerLet(const std::string& name, const std::shared_ptr<D
 }
 
 bool SymbolManager::hasLet(const std::string& name) const {
-    return let_key_map_.find(bindingKey(name)) != let_key_map_.end();
+    return let_key_map_.find(bindingName(name)) != let_key_map_.end();
 }
 
 void SymbolManager::registerFun(const std::string& name, const std::shared_ptr<DAGNode>& node) {
@@ -213,6 +236,21 @@ void SymbolManager::registerSort(const std::string& name, const std::shared_ptr<
     sort_key_map_[name] = sort;
 }
 
+std::shared_ptr<Sort> SymbolManager::bindTemporarySort(
+    const std::string& name, const std::shared_ptr<Sort>& sort) {
+    const auto prior = sort_key_map_.find(name);
+    const std::shared_ptr<Sort> previous =
+        prior == sort_key_map_.end() ? nullptr : prior->second;
+    sort_key_map_[name] = sort;
+    return previous;
+}
+
+void SymbolManager::restoreTemporarySort(
+    const std::string& name, const std::shared_ptr<Sort>& previous) {
+    if (previous) { sort_key_map_[name] = previous; }
+    else { sort_key_map_.erase(name); }
+}
+
 bool SymbolManager::hasSort(const std::string& name) const {
     return sort_key_map_.find(name) != sort_key_map_.end();
 }
@@ -222,17 +260,17 @@ void SymbolManager::removeSort(const std::string& name) {
 }
 
 void SymbolManager::registerQuantVar(const std::string& name, const std::shared_ptr<DAGNode>& node) {
-    quant_var_map_[bindingKey(name)].push_back(node);
+    quant_var_map_[bindingName(name)].push_back(node);
 }
 
 std::shared_ptr<DAGNode> SymbolManager::getQuantVar(const std::string& name) const {
-    auto it = quant_var_map_.find(bindingKey(name));
+    auto it = quant_var_map_.find(bindingName(name));
     return it != quant_var_map_.end() ? it->second.back() : nullptr;
 }
 
 void SymbolManager::popQuantScope(const std::vector<std::string>& keys) {
     for (auto key = keys.rbegin(); key != keys.rend(); ++key) {
-        auto it = quant_var_map_.find(bindingKey(*key));
+        auto it = quant_var_map_.find(bindingName(*key));
         if (it == quant_var_map_.end()) continue;
         it->second.pop_back();
         if (it->second.empty()) quant_var_map_.erase(it);
@@ -318,11 +356,22 @@ bool SymbolManager::hasPlaceholderVar(const std::string& name) const {
 }
 
 void SymbolManager::addFunctionName(const std::string& name) {
+    // Idempotent, like registerSort. Parser::mkFuncDec now records the name
+    // itself, and the (declare-fun ...) command path also calls this after it,
+    // so the same name arrives twice on that path; two entries would emit two
+    // declare-fun lines for one function.
+    if (!function_names_seen_.insert(name).second) { return; }
     function_names_.emplace_back(name);
 }
 
 const std::vector<std::string>& SymbolManager::getFunctionNames() const {
     return function_names_;
+}
+
+std::shared_ptr<DAGNode> SymbolManager::getFunctionByRecordedName(
+    const std::string& name) const {
+    const auto it = fun_key_map_.find(name);
+    return it != fun_key_map_.end() ? it->second : nullptr;
 }
 
 std::vector<std::shared_ptr<DAGNode>> SymbolManager::getFunctions() const {
@@ -336,7 +385,7 @@ std::vector<std::shared_ptr<DAGNode>> SymbolManager::getFunctions() const {
 }
 
 bool SymbolManager::hasFunctionName(const std::string& name) const {
-    return std::find(function_names_.begin(), function_names_.end(), name) != function_names_.end();
+    return function_names_seen_.find(name) != function_names_seen_.end();
 }
 
 void SymbolManager::addRecFunGroup(const std::vector<std::string>& names) {
@@ -356,6 +405,7 @@ const std::vector<std::string>* SymbolManager::getRecFunGroup(const std::string&
 }
 
 void SymbolManager::removeFunctionName(const std::string& name) {
+    function_names_seen_.erase(name);
     auto it = std::find(function_names_.begin(), function_names_.end(), name);
     if (it != function_names_.end()) function_names_.erase(it);
 }
@@ -388,6 +438,7 @@ void SymbolManager::removeFun(const std::string& name) {
     fun_key_map_.erase(name);
     recursive_definitions_.erase(name);
     removeFunctionName(name);
+    rec_fun_group_of_.erase(name);
 }
 
 } // namespace SOMTParser

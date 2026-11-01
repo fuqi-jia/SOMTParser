@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace py = pybind11;
@@ -202,6 +203,7 @@ PYBIND11_MODULE(_somtparser, m) {
         .value("DECLARE_FUN", CMD_TYPE::CT_DECLARE_FUN)
         .value("DECLARE_SORT", CMD_TYPE::CT_DECLARE_SORT)
         .value("DECLARE_DATATYPES", CMD_TYPE::CT_DECLARE_DATATYPES)
+        .value("DECLARE_CODATATYPES", CMD_TYPE::CT_DECLARE_CODATATYPES)
         .value("DEFINE_FUN", CMD_TYPE::CT_DEFINE_FUN)
         .value("DEFINE_FUN_REC", CMD_TYPE::CT_DEFINE_FUN_REC)
         .value("DEFINE_FUNS_REC", CMD_TYPE::CT_DEFINE_FUNS_REC)
@@ -489,6 +491,8 @@ PYBIND11_MODULE(_somtparser, m) {
     // ===== Command / Script =====
     py::class_<Command>(m, "Command", "A parsed SMT-LIB command")
         .def_readonly("type", &Command::type)
+        .def_readonly("index", &Command::index)
+        .def_readonly("original", &Command::original)
         .def_readonly("line_number", &Command::line_number)
         .def_property_readonly("expr", [](const Command& c) { return opt_node(c.expr); })
         .def_readonly("name", &Command::name)
@@ -499,6 +503,7 @@ PYBIND11_MODULE(_somtparser, m) {
         .def_readonly("push_pop_level", &Command::push_pop_level)
         .def_readonly("logic", &Command::logic)
         .def_readonly("value_terms", &Command::value_terms)
+        .def_readonly("assumptions", &Command::assumptions)
         .def_readonly("keyword", &Command::keyword)
         .def_property_readonly("is_assert", &Command::isAssert)
         .def_property_readonly("is_push", &Command::isPush)
@@ -592,6 +597,24 @@ PYBIND11_MODULE(_somtparser, m) {
         .def_property_readonly("variables", &Parser::getVariables)
         .def_property_readonly("declared_variables", &Parser::getDeclaredVariables)
         .def_property_readonly("functions", &Parser::getFunctions)
+        .def_property_readonly("uninterpreted_sorts", [](const Parser& p) {
+            std::vector<std::string> names;
+            std::unordered_set<std::string> seen;
+            const auto symbols = p.getSymbolManager();
+            const auto& sorts = symbols->getSortKeyMap();
+            for (const auto& name : symbols->getSortOrder()) {
+                const auto it = sorts.find(name);
+                // A zero-parameter define-sort alias can point at the same
+                // SK_DEC object as its target. Count the canonical constructor
+                // key only, and deduplicate live names after temporary scope
+                // registrations that leave historical order entries behind.
+                if (it != sorts.end() && it->second && it->second->isDec()
+                    && it->second->name == name && seen.insert(name).second) {
+                    names.push_back(name);
+                }
+            }
+            return names;
+        }, "Declared uninterpreted sort names, including parameterized sort constructors")
         .def_property_readonly("logic", [](const Parser& p) {
             return p.getOptions()->getLogic();
         })
@@ -1494,4 +1517,5 @@ PYBIND11_MODULE(_somtparser, m) {
     }, py::arg("path"), "Parse an SMT-LIB2/OMT file and return the Parser");
 
     m.attr("__version__") = "0.2.0";
+
 }

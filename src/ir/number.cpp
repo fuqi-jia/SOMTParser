@@ -731,6 +731,9 @@ HighPrecisionInteger::HighPrecisionInteger(long i) : value(i) {}
 
 HighPrecisionInteger::HighPrecisionInteger(unsigned long i) : value(i) {}
 
+// A signed long long also exceeds long on LLP64 platforms.
+HighPrecisionInteger::HighPrecisionInteger(long long i) : value(std::to_string(i)) {}
+
 // mpz_class has no unsigned long long constructor, so go through the decimal
 // string to stay exact on platforms where unsigned long is narrower.
 HighPrecisionInteger::HighPrecisionInteger(unsigned long long i) : value(std::to_string(i)) {}

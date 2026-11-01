@@ -32,6 +32,52 @@
 
 namespace SOMTParser{
 
+    namespace {
+    using EvalNode = std::shared_ptr<DAGNode>;
+    struct EvaluatedNode { EvalNode value; bool changed; };
+    struct EvaluationSession {
+        const Parser* parser;
+        const Model* model;
+        std::unordered_map<EvalNode, EvaluatedNode> completed;
+    };
+    thread_local EvaluationSession* active_evaluation = nullptr;
+    struct EvaluationScope {
+        EvaluationSession* previous;
+        explicit EvaluationScope(EvaluationSession& session) : previous(active_evaluation) {
+            active_evaluation = &session;
+        }
+        ~EvaluationScope() { active_evaluation = previous; }
+    };
+
+    // Operator handlers are local rules, not traversal entry points. Dynamic
+    // dependencies (function bodies, matches, lets) belong to explicit frames.
+    bool evaluatedOperand(const Parser* parser, const EvalNode& node,
+                          const std::shared_ptr<Model>& model, EvalNode& result) {
+        condAssert(active_evaluation && active_evaluation->parser == parser
+                   && active_evaluation->model == model.get(), "evaluation scope mismatch");
+        const auto found = active_evaluation->completed.find(node);
+        condAssert(found != active_evaluation->completed.end(), "evaluation operand missing from worklist");
+        result = found->second.value;
+        return found->second.changed;
+    }
+
+    std::string sanitizedUfKey(const std::string& value) {
+        std::string out;
+        for(char c : value) {
+            if(c == '(') out += "LP";
+            else if(c == ')') out += "RP";
+            else if(c == ' ') out += '_';
+            else if(c == '|') out += "PIPE";
+            else if(c == ':') out += "COLON";
+            else if(c == '"') out += "QUOTE";
+            else if(c == '\\') out += "BSLASH";
+            else out += c;
+        }
+        return out;
+    }
+    }
+
+
     void not_implemented_warning(const std::string& op){
         std::cerr << "Not implemented warning: " << op << " is not implemented" << std::endl;
     }
@@ -56,36 +102,200 @@ namespace SOMTParser{
         return result;
     }
     bool Parser::evaluate(std::shared_ptr<DAGNode> expr, const std::shared_ptr<Model> &model, std::shared_ptr<DAGNode> &result){
-        if(model->isEmpty() && !expr->isEq() && !expr->isDistinct()
-        && !expr->isConstructorApp() && !expr->isSelectorApp()
-        && !expr->isTesterApp() && !expr->isMatchApp()
-        && !expr->isFuncApplication()){
-            result = expr;
-            return false;
-        }
-        if(expr->isUnknown()){
-            return false;
-        }
-        else if(expr->isErr()){
-            return false;
-        }
-        else if(expr->isConst()){
-            result = expr;
-            return false;
-        }
-        else if(expr->isVar()){
-            result = model->get(expr);
-            if(result->isUnknown()){
-                result = expr;
-                return false;
+        EvaluationSession session{this, model.get(), {}};
+        EvaluationScope scope(session);
+        struct Frame {
+            EvalNode node;
+            size_t next = 0;
+            size_t end = 0;
+            bool entered = false;
+            bool dynamic_ready = false;
+            bool arguments_changed = false;
+            EvalNode dynamic{};
+            std::unordered_set<EvalNode> distinct_constants{};
+            std::vector<EvalNode> distinct_datatypes{};
+        };
+        std::vector<Frame> pending{{expr}};
+        std::unordered_set<const DAGNode*> active{expr.get()};
+        const auto push = [&](const EvalNode& child) {
+            if(session.completed.count(child)) return false;
+            condAssert(child && active.insert(child.get()).second,
+                       "cyclic or null expression in evaluation");
+            pending.push_back({child});
+            return true;
+        };
+        const auto finish = [&](const EvalNode& value, bool changed) {
+            const auto node = pending.back().node;
+            session.completed.emplace(node, EvaluatedNode{value, changed});
+            active.erase(node.get());
+            pending.pop_back();
+        };
+        while(!pending.empty()) {
+            auto& frame = pending.back();
+            const auto node = frame.node;
+            if(!frame.entered) {
+                frame.entered = true;
+                frame.end = node->getChildrenSize();
+                if(model->isEmpty() && !node->isEq() && !node->isDistinct()
+                   && !node->isConstructorApp() && !node->isSelectorApp()
+                   && !node->isTesterApp() && !node->isMatchApp()
+                   && !node->isFuncApplication()) {
+                    finish(node, false); continue;
+                }
+                if(node->isUnknown() || node->isErr()) {
+                    finish(NodeManager::NULL_NODE, false); continue;
+                }
+                if(node->isConst()) { finish(node, false); continue; }
+                if(node->isVar()) {
+                    auto value = model->get(node);
+                    const bool changed = !value->isUnknown();
+                    finish(changed ? value : node, changed); continue;
+                }
+                if(!getEvalDispatcher().has(node->getKind())
+                   || node->getKind() == NODE_KIND::NT_STR_SPLIT) {
+                    EvalNode value = NodeManager::NULL_NODE;
+                    EvalContext ctx(this, model, &value);
+                    const bool changed = getEvalDispatcher().dispatch(node, ctx);
+                    finish(value, changed); continue;
+                }
+                if(node->isUFApplication()) {
+                    // The symbolic model entry takes precedence over evaluating
+                    // arguments, including partial or otherwise undefined ones.
+                    std::string key = "uf@@" + node->getName();
+                    for(const auto& child : node->getChildren())
+                        key += "@@" + sanitizedUfKey(dumpSMTLIB2(child));
+                    const auto value = model->get(key);
+                    if(value && !value->isUnknown()) { finish(value, true); continue; }
+                }
+                if(node->isFuncApplication()) {
+                    if(node->getChildrenSize() < 1 || !node->getChild(0)
+                       || !node->getChild(0)->isFuncDef()) { finish(node, false); continue; }
+                    frame.next = 1; // A function declaration is not an operand.
+                }
+                // Indexed parameters and the fixed rounding modes used by
+                // these existing handlers are metadata, not evaluated terms.
+                switch(node->getKind()) {
+                case NODE_KIND::NT_BV_EXTRACT:
+                case NODE_KIND::NT_BV_REPEAT:
+                case NODE_KIND::NT_BV_ZERO_EXT:
+                case NODE_KIND::NT_BV_SIGN_EXT:
+                case NODE_KIND::NT_BV_ROTATE_LEFT:
+                case NODE_KIND::NT_BV_ROTATE_RIGHT:
+                    frame.end = std::min<size_t>(1, frame.end); break;
+                case NODE_KIND::NT_FP_ADD:
+                case NODE_KIND::NT_FP_SUB:
+                case NODE_KIND::NT_FP_MUL:
+                case NODE_KIND::NT_FP_DIV:
+                case NODE_KIND::NT_FP_FMA:
+                    frame.next = 1; break;
+                case NODE_KIND::NT_FP_TO_UBV:
+                case NODE_KIND::NT_FP_TO_SBV:
+                    frame.next = 1; frame.end = std::min<size_t>(2, frame.end); break;
+                case NODE_KIND::NT_FP_TO_FP:
+                    if(frame.end == 3 || frame.end == 4) frame.next = frame.end - 1;
+                    break;
+                case NODE_KIND::NT_FP_TO_FP_UNSIGNED:
+                    if(frame.end == 4) frame.next = 3;
+                    else frame.end = 0;
+                    break;
+                default: break;
+                }
             }
-            else{
-                return true;
+
+            const bool implication = node->isImplies() && node->getChildrenSize() > 2;
+            const bool let = node->isLet() || node->isLetChain();
+            const bool match = node->isMatchApp();
+            const bool function = node->isFuncApplication();
+            if(match && node->getChildrenSize() < 3) { finish(node, false); continue; }
+
+            // Select only the scrutinee before a match. For ordinary operators
+            // preserve source child order and short-circuit AND/OR/distinct.
+            const size_t count = let || implication ? 0 : match ? 1 : frame.end;
+            bool suspended = false, decided = false;
+            while(frame.next < count) {
+                const auto child = node->getChild(frame.next);
+                if(push(child)) { suspended = true; break; }
+                const auto& evaluated = session.completed.at(child);
+                const auto& value = evaluated.value;
+                frame.arguments_changed |= evaluated.changed;
+                ++frame.next;
+                if((node->isAnd() && value->isFalse()) || (node->isOr() && value->isTrue())) {
+                    finish(value, true); decided = true; break;
+                }
+                if(node->isDistinct()) {
+                    const auto distinct_value = evaluated.changed ? value : child;
+                    bool duplicate = false;
+                    if(distinct_value->isDtGroundValue()) {
+                        for(const auto& prior : frame.distinct_datatypes)
+                            if(areDtValuesEqual(distinct_value, prior)) { duplicate = true; break; }
+                        frame.distinct_datatypes.push_back(distinct_value);
+                    } else if(distinct_value->isConst()) {
+                        duplicate = !frame.distinct_constants.insert(distinct_value).second;
+                    }
+                    if(duplicate) { finish(mkFalse(), true); decided = true; break; }
+                }
             }
+            if(suspended || decided) continue;
+
+            if(let || implication || match || function) {
+                if(!frame.dynamic_ready) {
+                    frame.dynamic_ready = true;
+                    if(let) {
+                        frame.dynamic = expandLet(node);
+                    } else if(implication) {
+                        std::vector<EvalNode> disjuncts;
+                        for(size_t i = 0; i + 1 < node->getChildrenSize(); ++i)
+                            disjuncts.push_back(mkNot(node->getChild(i)));
+                        disjuncts.push_back(node->getChild(node->getChildrenSize() - 1));
+                        frame.dynamic = mkOr(disjuncts);
+                    } else if(function) {
+                        std::vector<EvalNode> arguments;
+                        for(size_t i = 1; i < node->getChildrenSize(); ++i)
+                            arguments.push_back(session.completed.at(node->getChild(i)).value);
+                        struct ExpandScope {
+                            std::shared_ptr<GlobalOptions> options;
+                            bool previous;
+                            explicit ExpandScope(std::shared_ptr<GlobalOptions> value)
+                                : options(value), previous(value->getExpandFunctions()) {
+                                options->setExpandFunctions(true);
+                            }
+                            ~ExpandScope() { options->setExpandFunctions(previous); }
+                        } expand_scope(getOptions());
+                        frame.dynamic = applyFun(node->getChild(0), arguments);
+                        if(!frame.dynamic) { finish(node, frame.arguments_changed); continue; }
+                        if(frame.dynamic->isErr()) { finish(frame.dynamic, true); continue; }
+                    } else {
+                        const auto scrutinee = session.completed.at(node->getChild(0)).value;
+                        for(size_t i = 1; i + 1 < node->getChildrenSize(); i += 2) {
+                            auto pattern = node->getChild(i);
+                            std::unordered_map<std::string, EvalNode> bindings;
+                            if(pattern->isConstructorApp()) {
+                                if(!scrutinee->isConstructorApp() || scrutinee->getName() != pattern->getName()) continue;
+                                for(size_t j = 0; j < pattern->getChildrenSize() && j < scrutinee->getChildrenSize(); ++j)
+                                    bindings[pattern->getChild(j)->getName()] = scrutinee->getChild(j);
+                            } else {
+                                bindings[pattern->getName()] = scrutinee;
+                            }
+                            frame.dynamic = substitute(node->getChild(i + 1), bindings);
+                            break;
+                        }
+                        if(!frame.dynamic) { finish(node, false); continue; }
+                    }
+                }
+                if(push(frame.dynamic)) continue;
+                const auto completed = session.completed.at(frame.dynamic);
+                const bool changed = completed.changed || (function && frame.arguments_changed);
+                finish(implication && !changed ? node : completed.value, changed);
+                continue;
+            }
+            EvalNode value = NodeManager::NULL_NODE;
+            EvalContext ctx(this, model, &value);
+            const bool changed = getEvalDispatcher().dispatch(node, ctx);
+            finish(value, changed);
         }
-        // Dispatch all operator kinds through the O(1) OpDispatcher table
-        EvalContext ctx(this, model, &result);
-        return getEvalDispatcher().dispatch(expr, ctx);
+        const auto completed = session.completed.at(expr);
+        result = completed.value;
+        return completed.changed;
     }
 
     bool Parser::evaluateSimpleOp(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result, NODE_KIND op){
@@ -157,7 +367,7 @@ namespace SOMTParser{
             case NODE_KIND::NT_REG_COMPLEMENT:
             {
                 std::shared_ptr<DAGNode> child = NodeManager::NULL_NODE;
-                changed |= evaluate(expr->getChildren()[0], model, child);
+                changed |= evaluatedOperand(this, expr->getChildren()[0], model, child);
                 if(!changed){
                     result = expr;
                     return false;
@@ -200,10 +410,14 @@ namespace SOMTParser{
             case NODE_KIND::NT_STR_SUFFIXOF:
             case NODE_KIND::NT_STR_CONTAINS:
             case NODE_KIND::NT_STR_CHARAT:
-            case NODE_KIND::NT_STR_LT: // TODO: lt/le/gt/ge now is binary operation, but it should be n-ary operation
-            case NODE_KIND::NT_STR_LE: // TODO: lt/le/gt/ge now is binary operation, but it should be n-ary operation
-            case NODE_KIND::NT_STR_GT: // TODO: lt/le/gt/ge now is binary operation, but it should be n-ary operation
-            case NODE_KIND::NT_STR_GE: // TODO: lt/le/gt/ge now is binary operation, but it should be n-ary operation
+            // The string orderings are binary nodes here on purpose: the
+            // :chainable n-ary form is expanded to a conjunction of adjacent
+            // pairs at parse time (op_parser.cpp, mkStrLt(vector) &c.), so an
+            // NT_STR_LT/LE/GT/GE node always has exactly two children.
+            case NODE_KIND::NT_STR_LT:
+            case NODE_KIND::NT_STR_LE:
+            case NODE_KIND::NT_STR_GT:
+            case NODE_KIND::NT_STR_GE:
             case NODE_KIND::NT_STR_IN_REG:
             case NODE_KIND::NT_STR_INDEXOF_REG:
             case NODE_KIND::NT_REG_RANGE:
@@ -211,8 +425,8 @@ namespace SOMTParser{
             {
                 std::shared_ptr<DAGNode> l = NodeManager::NULL_NODE;
                 std::shared_ptr<DAGNode> r = NodeManager::NULL_NODE;
-                changed |= evaluate(expr->getChildren()[0], model, l);
-                changed |= evaluate(expr->getChildren()[1], model, r);
+                changed |= evaluatedOperand(this, expr->getChildren()[0], model, l);
+                changed |= evaluatedOperand(this, expr->getChildren()[1], model, r);
                 if(!changed){
                     result = expr;
                     return false;
@@ -235,9 +449,9 @@ namespace SOMTParser{
                 std::shared_ptr<DAGNode> l = NodeManager::NULL_NODE;
                 std::shared_ptr<DAGNode> r = NodeManager::NULL_NODE;
                 std::shared_ptr<DAGNode> s = NodeManager::NULL_NODE;
-                changed |= evaluate(expr->getChildren()[0], model, l);
-                changed |= evaluate(expr->getChildren()[1], model, r);
-                changed |= evaluate(expr->getChildren()[2], model, s);
+                changed |= evaluatedOperand(this, expr->getChildren()[0], model, l);
+                changed |= evaluatedOperand(this, expr->getChildren()[1], model, r);
+                changed |= evaluatedOperand(this, expr->getChildren()[2], model, s);
                 if(!changed){
                     result = expr;
                     return false;
@@ -265,7 +479,7 @@ namespace SOMTParser{
                 std::vector<std::shared_ptr<DAGNode>> children;
                 for(auto child : expr->getChildren()){
                     std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-                    changed |= evaluate(child, model, eval);
+                    changed |= evaluatedOperand(this, child, model, eval);
                     children.emplace_back(eval);
                 }
                 if(!changed){
@@ -321,7 +535,7 @@ namespace SOMTParser{
                 std::vector<std::shared_ptr<DAGNode>> children;
                 for(auto child : expr->getChildren()){
                     std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-                    changed |= evaluate(child, model, eval);
+                    changed |= evaluatedOperand(this, child, model, eval);
                     children.emplace_back(eval);
                 }
                 if(!changed){
@@ -392,13 +606,13 @@ namespace SOMTParser{
                 while(i < expr->getChildren().size()){
                     // concat until the last constant child
                     std::shared_ptr<DAGNode> child = NodeManager::NULL_NODE;
-                    changed |= evaluate(expr->getChildren()[i], model, child);
+                    changed |= evaluatedOperand(this, expr->getChildren()[i], model, child);
                     if(child->isConst()){
                         // go on until the child is not constant
                         std::shared_ptr<DAGNode> child_ = NodeManager::NULL_NODE;
                         i++; // skip the already-evaluated first constant
                         while(i < expr->getChildren().size()){
-                            changed |= evaluate(expr->getChildren()[i], model, child_);
+                            changed |= evaluatedOperand(this, expr->getChildren()[i], model, child_);
                             if(!child_->isConst()) break;
                             child = mkOper(expr->getSort(), op, child, child_);
                             i++;
@@ -448,7 +662,7 @@ namespace SOMTParser{
                 std::vector<std::shared_ptr<DAGNode>> children;
                 for(const auto& child : expr->getChildren()){
                     std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-                    changed |= evaluate(child, model, eval);
+                    changed |= evaluatedOperand(this, child, model, eval);
                     children.emplace_back(eval);
                 }
                 if(!changed){
@@ -471,7 +685,7 @@ namespace SOMTParser{
         bool changed = false;
         for(auto child : expr->getChildren()){
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            changed |= evaluate(child, model, eval);
+            changed |= evaluatedOperand(this, child, model, eval);
             if(eval->isConst()){
                 if(eval->isFalse()){
                     result = eval;
@@ -503,7 +717,7 @@ namespace SOMTParser{
         bool changed = false;
         for(auto child : expr->getChildren()){
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            changed |= evaluate(child, model, eval);
+            changed |= evaluatedOperand(this, child, model, eval);
             if(eval->isConst()){
                 if(eval->isTrue()){
                     result = eval;
@@ -534,7 +748,37 @@ namespace SOMTParser{
         return evaluateSimpleOp(expr, model, result, NODE_KIND::NT_NOT);
     }
     bool Parser::evaluateImpl(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode>& result) {
-        return evaluateSimpleOp(expr, model, result, NODE_KIND::NT_IMPLIES);
+        // `=>` is :right-assoc in SMT-LIB, so `(=> a b c)` is `(=> a (=> b c))`,
+        // which is the disjunction `(or (not a) (not b) c)`. evaluateSimpleOp
+        // classifies NT_IMPLIES as binary and rebuilds it from the first two
+        // children only, so every argument past the second was dropped and
+        // `(=> a b c)` evaluated as `a => b` -- silently, and to the wrong
+        // answer whenever the two differ.
+        //
+        // Rewriting to the disjunction rather than repairing the binary path
+        // reuses the OR evaluator, which already handles a partial model
+        // correctly (one false antecedent decides the whole formula without
+        // needing the rest).
+        const size_t arity = expr->getChildrenSize();
+        if (arity <= 2) {
+            return evaluateSimpleOp(expr, model, result, NODE_KIND::NT_IMPLIES);
+        }
+        std::vector<std::shared_ptr<DAGNode>> disjuncts;
+        disjuncts.reserve(arity);
+        for (size_t i = 0; i + 1 < arity; i++) {
+            disjuncts.emplace_back(mkNot(expr->getChild(i)));
+        }
+        disjuncts.emplace_back(expr->getChild(arity - 1));
+        std::shared_ptr<DAGNode> rewritten = mkOr(disjuncts);
+        std::shared_ptr<DAGNode> evaluated = NodeManager::NULL_NODE;
+        const bool changed = evaluatedOperand(this, rewritten, model, evaluated);
+        if (!changed) {
+            // Report the node the caller handed us, not the rewriting.
+            result = expr;
+            return false;
+        }
+        result = evaluated;
+        return true;
     }
     bool Parser::evaluateXor(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode>& result) {
         bool changed = false;
@@ -546,7 +790,7 @@ namespace SOMTParser{
         // traverse all children
         for (auto child : expr->getChildren()) {
             std::shared_ptr<DAGNode> evaluatedChild = NodeManager::NULL_NODE;
-            changed |= evaluate(child, model, evaluatedChild);
+            changed |= evaluatedOperand(this, child, model, evaluatedChild);
             
             // evaluated as constant
             if (evaluatedChild->isConst()) {
@@ -594,10 +838,10 @@ namespace SOMTParser{
         std::vector<std::shared_ptr<DAGNode>> const_vals;
         for(auto child : expr->getChildren()){
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            bool c = evaluate(child, model, eval);
+            bool c = evaluatedOperand(this, child, model, eval);
             if(!c) eval = child;
             changed |= c;
-            if(eval->isConst() || eval->isDtGroundValue()){
+            if((eval->isConst() && (!eval->isCFP() || fpNodeToValue(eval))) || eval->isDtGroundValue()){
                 const_vals.emplace_back(eval);
             }
             else{
@@ -701,7 +945,7 @@ namespace SOMTParser{
         std::vector<std::shared_ptr<DAGNode>> dt_vals;
         for(auto child : expr->getChildren()){
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            bool c = evaluate(child, model, eval);
+            bool c = evaluatedOperand(this, child, model, eval);
             if(!c) eval = child;
             changed |= c;
             if(eval->isDtGroundValue()){
@@ -713,7 +957,7 @@ namespace SOMTParser{
                 }
                 dt_vals.push_back(eval);
             }
-            else if(eval->isConst()){
+            else if(eval->isConst() && (!eval->isCFP() || fpNodeToValue(eval))){
                 if(const_vals.empty()){
                     const_vals.insert(eval);
                 }
@@ -757,9 +1001,9 @@ namespace SOMTParser{
         std::shared_ptr<DAGNode> cond = NodeManager::NULL_NODE;
         std::shared_ptr<DAGNode> then_child = NodeManager::NULL_NODE;
         std::shared_ptr<DAGNode> else_child = NodeManager::NULL_NODE;
-        changed |= evaluate(expr->getChild(0), model, cond);
-        changed |= evaluate(expr->getChild(1), model, then_child);
-        changed |= evaluate(expr->getChild(2), model, else_child);
+        changed |= evaluatedOperand(this, expr->getChild(0), model, cond);
+        changed |= evaluatedOperand(this, expr->getChild(1), model, then_child);
+        changed |= evaluatedOperand(this, expr->getChild(2), model, else_child);
         if(!changed){
             result = expr;
             return false;
@@ -788,10 +1032,10 @@ namespace SOMTParser{
     bool Parser::evaluateDivInt(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         bool changed = false;
         std::vector<std::shared_ptr<DAGNode>> children;
-        for(const auto& child : expr->getChildren()) {
-            std::shared_ptr<DAGNode> evaluated = NodeManager::NULL_NODE;
-            changed |= evaluate(child, model, evaluated);
-            children.push_back(std::move(evaluated));
+        for(auto child : expr->getChildren()){
+            std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
+            changed |= evaluatedOperand(this, child, model, eval);
+            children.emplace_back(eval);
         }
         if(!changed) {
             result = expr;
@@ -1074,7 +1318,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvExtract(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> hi = expr->getChildren()[1];
         std::shared_ptr<DAGNode> lo = expr->getChildren()[2];
@@ -1090,7 +1334,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvRepeat(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> cnt = expr->getChildren()[1];
         if(bv->isCBV() && cnt->isCInt()){
@@ -1104,7 +1348,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvZeroExt(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> ext = expr->getChildren()[1];
         if(bv->isCBV() && ext->isCInt()){
@@ -1118,7 +1362,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvSignExt(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> ext = expr->getChildren()[1];
         if(bv->isCBV() && ext->isCInt()){
@@ -1132,7 +1376,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvRotLeft(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> amt = expr->getChildren()[1];
         if(bv->isCBV() && amt->isCInt()){
@@ -1145,7 +1389,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateBvRotRight(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, bv);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, bv);
         if(!changed){ result = expr; return false; }
         std::shared_ptr<DAGNode> amt = expr->getChildren()[1];
         if(bv->isCBV() && amt->isCInt()){
@@ -1158,7 +1402,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpAbs(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
         auto sort = fp1->getSort();
         if(fp1->isCFP() && sort){
@@ -1171,7 +1415,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpNeg(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
         auto sort = fp1->getSort();
         if(fp1->isCFP() && sort){
@@ -1185,7 +1429,7 @@ namespace SOMTParser{
     bool Parser::evaluateFpAdd(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         auto ch = expr->getChildren(); // [rm, fp1, fp2]
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE, fp2 = NodeManager::NULL_NODE;
-        bool c1 = evaluate(ch[1], model, fp1), c2 = evaluate(ch[2], model, fp2);
+        bool c1 = evaluatedOperand(this, ch[1], model, fp1), c2 = evaluatedOperand(this, ch[2], model, fp2);
         if(!c1) fp1 = ch[1];
         if(!c2) fp2 = ch[2];
         auto rm = ch[0]; auto rnd = getFPRoundingModeMpfr(rm);
@@ -1204,7 +1448,7 @@ namespace SOMTParser{
     bool Parser::evaluateFpSub(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         auto ch = expr->getChildren(); // [rm, fp1, fp2]
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE, fp2 = NodeManager::NULL_NODE;
-        bool c1 = evaluate(ch[1], model, fp1), c2 = evaluate(ch[2], model, fp2);
+        bool c1 = evaluatedOperand(this, ch[1], model, fp1), c2 = evaluatedOperand(this, ch[2], model, fp2);
         if(!c1) fp1 = ch[1];
         if(!c2) fp2 = ch[2];
         auto rm = ch[0]; auto rnd = getFPRoundingModeMpfr(rm);
@@ -1223,7 +1467,7 @@ namespace SOMTParser{
     bool Parser::evaluateFpMul(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         auto ch = expr->getChildren(); // [rm, fp1, fp2]
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE, fp2 = NodeManager::NULL_NODE;
-        bool c1 = evaluate(ch[1], model, fp1), c2 = evaluate(ch[2], model, fp2);
+        bool c1 = evaluatedOperand(this, ch[1], model, fp1), c2 = evaluatedOperand(this, ch[2], model, fp2);
         if(!c1) fp1 = ch[1];
         if(!c2) fp2 = ch[2];
         auto rm = ch[0]; auto rnd = getFPRoundingModeMpfr(rm);
@@ -1242,7 +1486,7 @@ namespace SOMTParser{
     bool Parser::evaluateFpDiv(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         auto ch = expr->getChildren(); // [rm, fp1, fp2]
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE, fp2 = NodeManager::NULL_NODE;
-        bool c1 = evaluate(ch[1], model, fp1), c2 = evaluate(ch[2], model, fp2);
+        bool c1 = evaluatedOperand(this, ch[1], model, fp1), c2 = evaluatedOperand(this, ch[2], model, fp2);
         if(!c1) fp1 = ch[1];
         if(!c2) fp2 = ch[2];
         auto rm = ch[0]; auto rnd = getFPRoundingModeMpfr(rm);
@@ -1261,7 +1505,7 @@ namespace SOMTParser{
     bool Parser::evaluateFpFma(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         auto ch = expr->getChildren(); // [rm, fp1, fp2, fp3]
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE, fp3=NodeManager::NULL_NODE;
-        bool c1=evaluate(ch[1],model,fp1), c2=evaluate(ch[2],model,fp2), c3=evaluate(ch[3],model,fp3);
+        bool c1=evaluatedOperand(this, ch[1],model,fp1), c2=evaluatedOperand(this, ch[2],model,fp2), c3=evaluatedOperand(this, ch[3],model,fp3);
         if(!c1) fp1 = ch[1];
         if(!c2) fp2 = ch[2];
         if(!c3) fp3 = ch[3];
@@ -1285,7 +1529,7 @@ namespace SOMTParser{
         bool rmChanged = false;
         if(ch.size() == 2 && ch[0]->getSort()->isRoundingMode()) {
             rmOut = NodeManager::NULL_NODE;
-            rmChanged = evaluate(ch[0], model, rmOut);
+            rmChanged = evaluatedOperand(this, ch[0], model, rmOut);
             if(!rmChanged) rmOut = ch[0];
             fpIn = ch[1];
         } else if(ch.size() == 1) {
@@ -1300,7 +1544,7 @@ namespace SOMTParser{
             rnd = getFPRoundingModeMpfr(rmOut);
         }
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool fpChanged = evaluate(fpIn, model, fp1);
+        bool fpChanged = evaluatedOperand(this, fpIn, model, fp1);
         if(!fpChanged) fp1 = fpIn;
         auto sort = fp1->getSort();
         if(fp1->isCFP() && sort && rmOut->isCRoundingMode()){
@@ -1317,7 +1561,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpRem(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         auto sort = fp1->getSort();
@@ -1339,7 +1583,7 @@ namespace SOMTParser{
         bool rmChanged = false;
         if(ch.size() == 2 && ch[0]->getSort()->isRoundingMode()) {
             rmOut = NodeManager::NULL_NODE;
-            rmChanged = evaluate(ch[0], model, rmOut);
+            rmChanged = evaluatedOperand(this, ch[0], model, rmOut);
             if(!rmChanged) rmOut = ch[0];
             fpIn = ch[1];
         } else if(ch.size() == 1) {
@@ -1354,7 +1598,7 @@ namespace SOMTParser{
             rnd = getFPRoundingModeMpfr(rmOut);
         }
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool fpChanged = evaluate(fpIn, model, fp1);
+        bool fpChanged = evaluatedOperand(this, fpIn, model, fp1);
         if(!fpChanged) fp1 = fpIn;
         auto sort = fp1->getSort();
         if(fp1->isCFP() && sort && rmOut->isCRoundingMode()){
@@ -1371,7 +1615,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpMin(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         auto sort = fp1->getSort();
@@ -1388,7 +1632,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpMax(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         auto sort = fp1->getSort();
@@ -1405,7 +1649,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpLe(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         if(fp1->isCFP() && fp2->isCFP()){
@@ -1420,7 +1664,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpLt(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         if(fp1->isCFP() && fp2->isCFP()){
@@ -1435,7 +1679,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpGe(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         if(fp1->isCFP() && fp2->isCFP()){
@@ -1450,7 +1694,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpGt(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         if(fp1->isCFP() && fp2->isCFP()){
@@ -1465,7 +1709,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpEq(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1=NodeManager::NULL_NODE, fp2=NodeManager::NULL_NODE;
-        bool c1=evaluate(expr->getChildren()[0],model,fp1), c2=evaluate(expr->getChildren()[1],model,fp2);
+        bool c1=evaluatedOperand(this, expr->getChildren()[0],model,fp1), c2=evaluatedOperand(this, expr->getChildren()[1],model,fp2);
         if(!c1) fp1 = expr->getChildren()[0];
         if(!c2) fp2 = expr->getChildren()[1];
         if(fp1->isCFP() && fp2->isCFP()){
@@ -1484,7 +1728,7 @@ namespace SOMTParser{
         if(ch.size() < 2){ result = expr; return false; }
         auto rm = ch[0];
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(ch[1], model, fp1);
+        bool changed = evaluatedOperand(this, ch[1], model, fp1);
         if(!changed) fp1 = ch[1];
         if(fp1->isCFP()){
             auto sort = expr->getSort();
@@ -1509,7 +1753,7 @@ namespace SOMTParser{
         if(ch.size() < 2){ result = expr; return false; }
         auto rm = ch[0];
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(ch[1], model, fp1);
+        bool changed = evaluatedOperand(this, ch[1], model, fp1);
         if(!changed) fp1 = ch[1];
         if(fp1->isCFP()){
             auto sort = expr->getSort();
@@ -1530,7 +1774,7 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpToReal(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
         if(fp1->isCFP()){
             auto v = fpNodeToValue(fp1);
@@ -1555,7 +1799,7 @@ namespace SOMTParser{
         if(ch.size() == 3) {
             // Case: ((_ to_fp eb sb) BitVec) — bit reinterpretation, children = [eb, sb, bv]
             std::shared_ptr<DAGNode> bv = NodeManager::NULL_NODE;
-            bool changed = evaluate(ch[2], model, bv);
+            bool changed = evaluatedOperand(this, ch[2], model, bv);
             if(!changed) bv = ch[2];
             if(bv->isCBV()) {
                 auto fv = FloatingPointUtils::bvBitsToFpValue(bv->getName(), target_eb, target_sb);
@@ -1570,20 +1814,16 @@ namespace SOMTParser{
             // Children = [eb, sb, rm, param]
             auto rm = ch[2];
             std::shared_ptr<DAGNode> param = NodeManager::NULL_NODE;
-            bool changed = evaluate(ch[3], model, param);
+            bool changed = evaluatedOperand(this, ch[3], model, param);
             if(!changed) param = ch[3];
             auto rnd = getFPRoundingModeMpfr(rm);
 
             if(param->isCFP()) {
-                // Case: FP → FP (precision change)
-                auto v = fpNodeToValue(param);
-                if(v) {
-                    mpfr_t m;
-                    mpfr_init2(m, static_cast<mpfr_prec_t>(target_sb + 16));
-                    v->toMpfr(m);
-                    auto rv = FloatingPointUtils::FPValue::fromMpfr(m, target_eb, target_sb);
-                    mpfr_clear(m);
-                    result = mkConstFp(rv.toSMTFP(), target_eb, target_sb);
+                // Bit extraction alone does not implement format conversion
+                // rounding. Only the same-format identity is safe to fold.
+                if(param->getSort()->getExponentWidth() == target_eb
+                    && param->getSort()->getSignificandWidth() == target_sb) {
+                    result = param;
                     return true;
                 }
             } else if(param->isCReal() || param->isCInt()) {
@@ -1617,7 +1857,7 @@ namespace SOMTParser{
         std::vector<std::shared_ptr<DAGNode>> evaled;
         for(auto& child : ch){
             std::shared_ptr<DAGNode> ev = NodeManager::NULL_NODE;
-            changed |= evaluate(child, model, ev);
+            changed |= evaluatedOperand(this, child, model, ev);
             evaled.push_back(ev);
         }
         if(!changed){ result = expr; return false; }
@@ -1635,7 +1875,7 @@ namespace SOMTParser{
         size_t target_sb = sort->getSignificandWidth();
         auto rm = ch[2];
         std::shared_ptr<DAGNode> param = NodeManager::NULL_NODE;
-        bool changed = evaluate(ch[3], model, param);
+        bool changed = evaluatedOperand(this, ch[3], model, param);
         if(!changed) param = ch[3];
         if(param->isCBV()) {
             auto rnd = getFPRoundingModeMpfr(rm);
@@ -1652,57 +1892,57 @@ namespace SOMTParser{
     }
     bool Parser::evaluateFpIsNormal(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsNormal(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsNormal(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_NORMAL, fp1);
         return true;
     }
     bool Parser::evaluateFpIsSubnormal(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsSubnormal(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsSubnormal(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_SUBNORMAL, fp1);
         return true;
     }
     bool Parser::evaluateFpIsZero(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsZero(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsZero(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_ZERO, fp1);
         return true;
     }
     bool Parser::evaluateFpIsInf(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsInf(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsInf(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_INF, fp1);
         return true;
     }
     bool Parser::evaluateFpIsNaN(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsNaN(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsNaN(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_NAN, fp1);
         return true;
     }
     bool Parser::evaluateFpIsNeg(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = fpNodeIsNeg(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = fpNodeIsNeg(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_NEG, fp1);
         return true;
     }
     bool Parser::evaluateFpIsPos(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode> &result){
         std::shared_ptr<DAGNode> fp1 = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChildren()[0], model, fp1);
+        bool changed = evaluatedOperand(this, expr->getChildren()[0], model, fp1);
         if(!changed) fp1 = expr->getChildren()[0];
-        if(fp1->isCFP()){ result = !fpNodeIsNaN(fp1) && !fpNodeIsNeg(fp1) ? mkTrue() : mkFalse(); return true; }
+        if(fp1->isCFP() && fpNodeToValue(fp1)){ result = !fpNodeIsNaN(fp1) && !fpNodeIsNeg(fp1) ? mkTrue() : mkFalse(); return true; }
         result = mkOper(SortManager::BOOL_SORT, NODE_KIND::NT_FP_IS_POS, fp1);
         return true;
     }
@@ -1710,7 +1950,7 @@ namespace SOMTParser{
         auto ch = expr->getChildren();
         if(ch.empty()){ result = expr; return false; }
         std::shared_ptr<DAGNode> val = NodeManager::NULL_NODE;
-        bool changed = evaluate(ch[0], model, val);
+        bool changed = evaluatedOperand(this, ch[0], model, val);
         if(!changed){ result = expr; return false; }
         result = getNodeManager()->createNode(expr->getSort(), NODE_KIND::NT_CONST_ARRAY, "const_array", {val});
         return true;
@@ -1722,8 +1962,8 @@ namespace SOMTParser{
         
         std::shared_ptr<DAGNode> eval_array;
         std::shared_ptr<DAGNode> eval_index;
-        bool array_changed = evaluate(array, model, eval_array);
-        bool index_changed = evaluate(index, model, eval_index);
+        bool array_changed = evaluatedOperand(this, array, model, eval_array);
+        bool index_changed = evaluatedOperand(this, index, model, eval_index);
         
         // Apply array simplification to the evaluated select
         if (array_changed || index_changed) {
@@ -1778,9 +2018,9 @@ namespace SOMTParser{
         std::shared_ptr<DAGNode> eval_array;
         std::shared_ptr<DAGNode> eval_index;
         std::shared_ptr<DAGNode> eval_value;
-        bool array_changed = evaluate(array, model, eval_array);
-        bool index_changed = evaluate(index, model, eval_index);
-        bool value_changed = evaluate(value, model, eval_value);
+        bool array_changed = evaluatedOperand(this, array, model, eval_array);
+        bool index_changed = evaluatedOperand(this, index, model, eval_index);
+        bool value_changed = evaluatedOperand(this, value, model, eval_value);
         
         // Apply array simplification to the evaluated store
         if (array_changed || index_changed || value_changed) {
@@ -1930,7 +2170,7 @@ namespace SOMTParser{
         bool args_changed = false;
         for(size_t i = 1; i < expr->getChildrenSize(); ++i){
             std::shared_ptr<DAGNode> ev = NodeManager::NULL_NODE;
-            args_changed |= evaluate(expr->getChild(i), model, ev);
+            args_changed |= evaluatedOperand(this, expr->getChild(i), model, ev);
             evaled_args.push_back(ev);
         }
         bool old_expand = getOptions()->getExpandFunctions();
@@ -1945,34 +2185,17 @@ namespace SOMTParser{
             result = expanded;
             return true;
         }
-        bool body_ev = evaluate(expanded, model, result);
+        bool body_ev = evaluatedOperand(this, expanded, model, result);
         return args_changed || body_ev;
     }
     bool Parser::evaluateUFApply(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode>& result) {
-        // Helper: sanitize a UF key so it only contains valid SMT-LIB symbol characters
-        auto sanitize = [](const std::string& s) -> std::string {
-            std::string out;
-            out.reserve(s.size());
-            for (char c : s) {
-                if (c == '(') out += "LP";
-                else if (c == ')') out += "RP";
-                else if (c == ' ') out += '_';
-                else if (c == '|') out += "PIPE";
-                else if (c == ':') out += "COLON";
-                else if (c == '"') out += "QUOTE";
-                else if (c == '\\') out += "BSLASH";
-                else out += c;
-            }
-            return out;
-        };
-
         // Strategy: try symbolic key first (matches collect_uf_apps convention),
         // then try evaluated key (for when arguments resolve to constants).
 
         // 1. Try symbolic key (from original unevaluated expression children)
         std::string sym_key = "uf@@" + expr->getName();
         for (size_t i = 0; i < expr->getChildrenSize(); i++) {
-            sym_key += "@@" + sanitize(dumpSMTLIB2(expr->getChild(i)));
+            sym_key += "@@" + sanitizedUfKey(dumpSMTLIB2(expr->getChild(i)));
         }
         auto val = model->get(sym_key);
         if (val && !val->isUnknown()) {
@@ -1985,7 +2208,7 @@ namespace SOMTParser{
         bool children_changed = false;
         for (size_t i = 0; i < expr->getChildrenSize(); i++) {
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            children_changed |= evaluate(expr->getChild(i), model, eval);
+            children_changed |= evaluatedOperand(this, expr->getChild(i), model, eval);
             eval_args.push_back(eval);
         }
 
@@ -1994,9 +2217,9 @@ namespace SOMTParser{
         for (const auto& a : eval_args) {
             eval_key += "@@";
             if (a->isConst() || a->isTrue() || a->isFalse()) {
-                eval_key += sanitize(a->getName());
+                eval_key += sanitizedUfKey(a->getName());
             } else {
-                eval_key += sanitize(dumpSMTLIB2(a));
+                eval_key += sanitizedUfKey(dumpSMTLIB2(a));
             }
         }
         if (eval_key != sym_key) {
@@ -2021,20 +2244,19 @@ namespace SOMTParser{
 
     bool Parser::areDtValuesEqual(const std::shared_ptr<DAGNode>& a, const std::shared_ptr<DAGNode>& b) {
         if(!a->isDtGroundValue() || !b->isDtGroundValue()) return false;
-        if(a->getName() != b->getName()) return false;
-        if(a->getChildrenSize() != b->getChildrenSize()) return false;
-        for(size_t i = 0; i < a->getChildrenSize(); ++i){
-            auto ca = a->getChild(i);
-            auto cb = b->getChild(i);
-            if(ca->isDtGroundValue() && cb->isDtGroundValue()){
-                if(!areDtValuesEqual(ca, cb)) return false;
-            }
-            else if(ca->isConst() && cb->isConst()){
-                if(ca->toString() != cb->toString()) return false;
-            }
-            else{
-                return false;
-            }
+        std::vector<std::pair<EvalNode, EvalNode>> pending{{a, b}};
+        std::unordered_map<const DAGNode*, std::unordered_set<const DAGNode*>> seen;
+        while(!pending.empty()) {
+            auto pair = std::move(pending.back()); pending.pop_back();
+            if(!seen[pair.first.get()].insert(pair.second.get()).second) continue;
+            if(pair.first->isConstructorApp() && pair.second->isConstructorApp()) {
+                if(pair.first->getName() != pair.second->getName()
+                   || pair.first->getChildrenSize() != pair.second->getChildrenSize()) return false;
+                for(size_t i = 0; i < pair.first->getChildrenSize(); ++i)
+                    pending.emplace_back(pair.first->getChild(i), pair.second->getChild(i));
+            } else if(pair.first->isConst() && pair.second->isConst()) {
+                if(pair.first->toString() != pair.second->toString()) return false;
+            } else return false;
         }
         return true;
     }
@@ -2045,7 +2267,7 @@ namespace SOMTParser{
         bool changed = false;
         for(size_t i = 0; i < expr->getChildrenSize(); i++) {
             std::shared_ptr<DAGNode> eval = NodeManager::NULL_NODE;
-            changed |= evaluate(expr->getChild(i), model, eval);
+            changed |= evaluatedOperand(this, expr->getChild(i), model, eval);
             eval_args.push_back(eval);
         }
         if(changed) {
@@ -2060,7 +2282,7 @@ namespace SOMTParser{
         // A selector takes one argument: the DT value
         if(expr->getChildrenSize() != 1) { result = expr; return false; }
         std::shared_ptr<DAGNode> dt_val = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChild(0), model, dt_val);
+        bool changed = evaluatedOperand(this, expr->getChild(0), model, dt_val);
 
         // If the DT value is a constructor application, extract the appropriate field
         if(dt_val->isConstructorApp()) {
@@ -2091,7 +2313,7 @@ namespace SOMTParser{
         // A tester (is-<ctor>) takes one argument: the DT value
         if(expr->getChildrenSize() != 1) { result = expr; return false; }
         std::shared_ptr<DAGNode> dt_val = NodeManager::NULL_NODE;
-        bool changed = evaluate(expr->getChild(0), model, dt_val);
+        bool changed = evaluatedOperand(this, expr->getChild(0), model, dt_val);
 
         // If the DT value is a constructor application, check if constructor matches
         if(dt_val->isConstructorApp()) {
@@ -2122,7 +2344,7 @@ namespace SOMTParser{
 
         // Evaluate the scrutinee
         std::shared_ptr<DAGNode> scrutinee = NodeManager::NULL_NODE;
-        evaluate(expr->getChild(0), model, scrutinee);
+        evaluatedOperand(this, expr->getChild(0), model, scrutinee);
 
         // Try each case (children[1]=pattern1, children[2]=body1, ...)
         for(size_t i = 1; i + 1 < expr->getChildrenSize(); i += 2) {
@@ -2138,14 +2360,14 @@ namespace SOMTParser{
                         subst[pattern->getChild(j)->getName()] = scrutinee->getChild(j);
                     }
                     auto expanded = substitute(body, subst);
-                    return evaluate(expanded, model, result);
+                    return evaluatedOperand(this, expanded, model, result);
                 }
             } else {
                 // Catch-all variable pattern: bind the variable to the scrutinee
                 std::unordered_map<std::string, std::shared_ptr<DAGNode>> subst;
                 subst[pattern->getName()] = scrutinee;
                 auto expanded = substitute(body, subst);
-                return evaluate(expanded, model, result);
+                return evaluatedOperand(this, expanded, model, result);
             }
         }
 
@@ -2156,7 +2378,7 @@ namespace SOMTParser{
 
     bool Parser::evaluateLet(const std::shared_ptr<DAGNode>& expr, const std::shared_ptr<Model>& model, std::shared_ptr<DAGNode>& result){
         std::shared_ptr<DAGNode> body = expandLet(expr);
-        return evaluate(body, model, result);
+        return evaluatedOperand(this, body, model, result);
     }
 
     std::shared_ptr<DAGNode> Parser::expandLet(std::shared_ptr<DAGNode> expr){

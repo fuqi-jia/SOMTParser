@@ -38,6 +38,8 @@ int main() {
         for (auto c : children(n)) pending.push_back(c);
     }
     VERIFY(innerCount == 1);
+    VERIFY(!binders.getSymbolManager()->getQuantVar("x"));
+    VERIFY(!binders.getSymbolManager()->hasLet("x"));
     for (bool preserve : {false, true}) {
         Parser scoped;
         scoped.getOptions()->parsing_preserve_let = preserve;
@@ -86,9 +88,17 @@ int main() {
         "(declare-heap (Int Int))(assert (pto true 1))",
         "(declare-heap (Int Int))(assert (pto (as sep.nil Bool) 1))",
         "(pop 1)",
-        "(assert (forall ((x Int) (|x| Int)) true))"}) {
+        "(assert (forall ((x Int) (|x| Int)) true))",
+        "(assert (forall () true))",
+        "(assert (let ((x 1) (|x| 2)) true))"}) {
         Parser invalid;
         VERIFY(!invalid.parseStr("(set-logic ALL)" + source));
     }
+    Parser recovery;
+    VERIFY(!recovery.parseStr("(assert (forall ((x Int) (|x| Int)) true))"));
+    VERIFY(!recovery.getSymbolManager()->getQuantVar("x"));
+    VERIFY(!recovery.getSymbolManager()->hasLet("x"));
+    VERIFY(recovery.parseStr("(assert (forall ((x Int)) (= x x)))"));
+    VERIFY(!recovery.getSymbolManager()->getQuantVar("x"));
     std::cout << "native heap and binder regressions passed\n";
 }

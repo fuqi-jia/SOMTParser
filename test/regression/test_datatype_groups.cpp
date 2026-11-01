@@ -89,6 +89,25 @@ int main() {
         VERIFY(count(out, "(declare-datatypes") == 1);
     }
 
+    {
+        const std::string out = roundTrip(
+            "(set-logic ALL)"
+            "(declare-codatatypes ((S 0) (T 0)) (((A (a T))) ((B (b S)))))"
+            "(declare-const s S)(assert (= s (A (B s))))(check-sat)",
+            "mutually corecursive types");
+        VERIFY(count(out, "(declare-codatatypes") == 1);
+        VERIFY(count(out, "(declare-datatypes") == 0);
+    }
+    {
+        const std::string out = roundTrip(
+            "(set-logic ALL)"
+            "(declare-codatatypes ((S 1)) ((par (X) ((cons (hd X) (tl (S X)))))))"
+            "(declare-const s (S Int))(assert (= s (cons 4 s)))(check-sat)",
+            "parametric corecursive type");
+        VERIFY(count(out, "(declare-codatatypes") == 1);
+        VERIFY(has(out, "(par (X)"));
+    }
+
     // ---- Standing alone: unchanged, one command each. -----------------------
     {
         // The case every existing script and every corpus file is, so its
@@ -162,22 +181,33 @@ int main() {
     // ---- The dependency may be NESTED inside a sort. -----------------------
     //
     // A selector of sort `(Array Int TL)` depends on TL exactly as one of sort
-    // `TL` does. Reading only the outermost sort name missed the edge, so the
-    // two datatypes landed in different groups, were emitted as separate
-    // commands, and the second was named before it was declared -- this file's
-    // own defect, reached through a sort constructor instead of directly.
+    // `TL` does. The scan read only the OUTERMOST sort name, so it missed the
+    // edge: the two datatypes landed in different groups, were emitted as
+    // separate commands, and the second was named before it was declared --
+    // this file's own defect, reached through a sort constructor.
+    //
+    // Worth naming as a class rather than as a case. The first round of this
+    // fix tested `T` mentioning `TL` DIRECTLY, which is the shape a test author
+    // reaches for; `(Array Int TL)` and `(Set Q)` are the shapes a real model
+    // uses, because a datatype usually refers to a COLLECTION of another one.
     {
         const std::string out = roundTrip(
             "(declare-datatypes ((T 0) (TL 0))"
             " (((node (kids (Array Int TL))) (leaf))"
             "  ((tnil) (tcons (thd T)))))\n",
             "mutual recursion through an array");
-        // One command, not two: they are one strongly connected component.
         VERIFY(count(out, "(declare-datatypes") == 1);
     }
     {
-        // And two levels down, which a scan that looked one level deep would
-        // still miss.
+        const std::string out = roundTrip(
+            "(declare-datatypes ((P 0) (Q 0))"
+            " (((p1 (pq (Set Q))) (p2))"
+            "  ((q1 (qp P)))))\n",
+            "mutual recursion through a set");
+        VERIFY(count(out, "(declare-datatypes") == 1);
+    }
+    {
+        // Two levels down, which a scan looking one level deep would still miss.
         const std::string out = roundTrip(
             "(declare-datatypes ((U 0) (V 0))"
             " (((u1 (uv (Array Int (Array Int V)))) (u2))"
@@ -186,9 +216,9 @@ int main() {
         VERIFY(count(out, "(declare-datatypes") == 1);
     }
     {
-        // A ONE-WAY nested dependency still gets two commands, in the right
-        // order: grouping is for cycles, and merging independent datatypes
-        // would change output that was already correct.
+        // A ONE-WAY nested dependency still gets two commands, in the order
+        // that declares the dependency first: grouping is for cycles, and
+        // merging independent datatypes would change correct output.
         const std::string out = roundTrip(
             "(declare-datatypes ((W 0) (Z 0))"
             " (((w1 (wz (Array Int Z))))"
@@ -196,6 +226,142 @@ int main() {
             "one-way dependency through an array");
         VERIFY(count(out, "(declare-datatypes") == 2);
         VERIFY(out.find("(Z 0)") < out.find("(W 0)"));
+    }
+
+    // ---- Parametric datatypes: SMT-LIB's `par` form. -----------------------
+    //
+    // `(declare-datatypes ((L 1)) ((par (X) (...))))` did not parse at all --
+    // the arity was read and the body then had no syntax for the parameter it
+    // announced, so a form the standard defines failed with `"(" missing`, a
+    // tokeniser complaint. The parameters are sorts, and inside the body they
+    // are ordinary sorts in scope; outside it they must be gone, or the next
+    // command would see a sort the script never declared.
+    {
+        const std::string out = roundTrip(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n",
+            "parametric list");
+        // The `par` form is written back, and with the parameter's own NAME:
+        // a Sort records its arity, not what its parameters were called, so
+        // this only works because the names are carried from the declaration.
+        VERIFY(has(out, "par (X)"));
+        VERIFY(has(out, "(L 1)"));
+        VERIFY(has(out, "(hd X)"));
+        VERIFY(has(out, "(tl (L X))"));
+    }
+    {
+        // Two parameters, and the singular `declare-datatype` spelling, where
+        // the arity is not written down -- it is however many `par` binds.
+        const std::string out = roundTrip(
+            "(declare-datatype Pair (par (A B) ((mk (fst A) (snd B)))))\n",
+            "parametric pair, singular form");
+        VERIFY(has(out, "par (A B)"));
+        VERIFY(has(out, "(Pair 2)"));
+    }
+    {
+        // A parameter is bound by its `par` and is not in scope afterwards. If
+        // it leaked, this would declare a variable of a sort the script never
+        // declared and the dump would not read back.
+        ParserPtr p = newParser();
+        VERIFY(p->parseStr("(declare-datatypes ((L 1))"
+                           " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"));
+        VERIFY(!p->parseStr("(declare-fun leaked () X)\n"));
+    }
+    {
+        // Mutual recursion BETWEEN parametric datatypes: one group, one
+        // command, each with its own parameter name.
+        const std::string out = roundTrip(
+            "(declare-datatypes ((T 1) (TL 1))"
+            " ((par (X) ((node (kids (TL X))) (leaf (val X))))"
+            "  (par (Y) ((tnil) (tcons (thd (T Y)) (ttl (TL Y)))))))\n",
+            "mutually recursive parametric datatypes");
+        VERIFY(count(out, "(declare-datatypes") == 1);
+        VERIFY(has(out, "par (X)"));
+        VERIFY(has(out, "par (Y)"));
+    }
+    {
+        // A NON-parametric datatype keeps its plain body: `par` is not written
+        // for an arity-0 datatype, so every existing script's output is
+        // unchanged.
+        const std::string out = roundTrip(
+            "(declare-datatypes ((C 0)) (((r) (g) (b))))\n", "no par when arity 0");
+        VERIFY(!has(out, "par"));
+    }
+
+    // ---- Applying a parametric datatype's members. --------------------------
+    //
+    // A member of a parametric datatype is POLYMORPHIC, and its declaration
+    // records the parameters rather than an instance: `hd` is declared
+    // `L -> X`. Applying it to an `(L Int)` has to give `Int`, and without the
+    // substitution it gave `X` -- a sort no longer in scope, so the next
+    // operator over the term reported a type mismatch naming a symbol the
+    // script never wrote.
+    {
+        ParserPtr p = newParser();
+        VERIFY(p->parseStr(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"
+            "(declare-fun l () (L Int))\n"
+            "(assert (> (hd l) 0))\n"));
+        const std::string out = p->dumpSMT2();
+        // The instantiated sort survives to the declaration, so a reader knows
+        // WHICH instance the variable is of.
+        VERIFY(has(out, "(declare-fun l () (L Int))"));
+        ParserPtr q = newParser();
+        VERIFY(q->parseStr(out));
+    }
+    {
+        // ...and the substitution must not accept the wrong instance: `hd` of
+        // an `(L Int)` is an Int, so comparing it to a Bool is a type error and
+        // has to stay one. A substitution that returned the parameter unchanged
+        // would make both this and the case above fail; one that returned
+        // anything would make both pass.
+        ParserPtr p = newParser();
+        VERIFY(!p->parseStr(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"
+            "(declare-fun l () (L Int))\n"
+            "(assert (= (hd l) true))\n"));
+    }
+    {
+        // A selector whose result is the datatype itself: `tl` of an `(L Int)`
+        // is an `(L Int)`, not a bare `L`, so it can be selected from again.
+        ParserPtr p = newParser();
+        VERIFY(p->parseStr(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"
+            "(declare-fun l () (L Int))\n"
+            "(assert (> (hd (tl l)) 0))\n"));
+        ParserPtr q = newParser();
+        VERIFY(q->parseStr(p->dumpSMT2()));
+    }
+
+    {
+        // `(as nil (L Int))` -- ASCRIBING which instance a constructor builds.
+        // `nil` mentions none of the parameters, so it has no arguments to
+        // infer them from and SMT-LIB makes the script say. Without it a
+        // parametric datatype has declarations and no way to build a value.
+        ParserPtr p = newParser();
+        VERIFY(p->parseStr(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"
+            "(declare-fun l () (L Int))\n"
+            "(assert (= l (cons 1 (as nil (L Int)))))\n"));
+        const std::string out = p->dumpSMT2();
+        ParserPtr q = newParser();
+        VERIFY(q->parseStr(out));
+        VERIFY(q->dumpSMT2() == out);
+    }
+    {
+        // The ascription is what decides the instance, so a constructor built
+        // at the wrong one must not be accepted: `(as nil (L Bool))` is not an
+        // `(L Int)` and the equality is a type error.
+        ParserPtr p = newParser();
+        VERIFY(!p->parseStr(
+            "(declare-datatypes ((L 1))"
+            " ((par (X) ((nil) (cons (hd X) (tl (L X)))))))\n"
+            "(declare-fun l () (L Int))\n"
+            "(assert (= l (as nil (L Bool))))\n"));
     }
 
     std::cout << "All datatype-group tests passed." << std::endl;

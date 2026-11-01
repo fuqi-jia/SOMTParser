@@ -8,6 +8,13 @@
 
 ## Design Overview
 
+The native frontend parses SMT-LIB/OMT into the typed SMT expression DAG.
+See [the source layout](docs/source-layout.md) for module responsibilities.
+
+`main` contains the SMT parser and core maintenance. Future language frontends,
+HIR, translation and natural-language modeling are maintained on
+[`develop`](https://github.com/fuqi-jia/SOMTParser/tree/develop).
+
 - **Frontend**: Command and term parsing, type checking, OMT-oriented input, and API-level expression construction feeding the same IR pipeline.
 - **IR core**: A unified typed DAG representation with structure sharing and canonicalization via `NodeManager`; equal subterms are stored once.
 - **Passes**: IR-based traversal (each node visited at most once) and rewriting (bottom-up, with fixpoint mode), plus a kind-based dispatch mechanism for extensions.
@@ -15,7 +22,7 @@
 
 ## Key Features
 
-- **SMT-LIB2 support**: Compliant with the SMT-LIB2 specification; multiple logics and theories.
+- **SMT-LIB2 support**: Parsing and typed representations for multiple SMT-LIB2 logics and theories.
 - **FloatingPoint dialect**: By default the parser accepts small **lenient** extensions (e.g. unary `fp.sqrt` canonicalized to `(fp.sqrt RNE …)` in the IR, and aliases like `fp.=`). For **stricter** surface syntax aligned with the official FloatingPoint theory, enable `strict_smtlib_fp` (`Parser::setStrictSmtlib(true)` or `GlobalOptions::setOption("strict_smtlib_fp", "true")`).
 - **Multi-theory**: Booleans, integer/real arithmetic, bitvectors, IEEE-754 floating point, strings and regular expressions, arrays.
 - **Typed DAG IR**: Structure sharing and canonicalization for a more compact representation and easier analysis/transformation.
@@ -28,7 +35,7 @@
 ## System Requirements
 
 - C++17 compatible compiler
-- CMake 3.10+
+- CMake 3.16+
 - GMP (GNU Multiple Precision Arithmetic Library)
 - MPFR (GNU Multiple Precision Floating-Point Reliable Library)
 
@@ -153,6 +160,7 @@ You can also use the provided test script from the project root:
 |--------|-------------|---------|
 | `BUILD_SHARED_LIBS` | Build a shared rather than static library | OFF |
 | `SOMTPARSER_BUILD_TESTS` | Build and register test executables with CTest | OFF |
+| `BUILD_PYTHON` | Build the native SMT Python extension | OFF |
 | `SOMTPARSER_WARNINGS_AS_ERRORS` | Treat warnings in SOMTParser sources as errors | OFF |
 | `SOMTPARSER_ENABLE_TIMING` | Enable the timing profiler | OFF |
 
@@ -846,24 +854,3 @@ For technical inquiries or support, please contact:
 **Fuqi Jia**  
 Email: jiafq@ios.ac.cn  
 Institute of Software, Chinese Academy of Sciences
-
-
-### Native recursive definitions and heap syntax
-
-Recursive calls retain an immutable declaration node as child zero, followed by
-actual arguments. `Parser::getRecursiveDefinitions()` returns `{symbol,
-definition}` entries for the active scope; definitions expose their body and
-formal parameters through `getFuncBody()` and `getFuncParams()`. Match calls to
-this environment by symbol identity. Keep a copy of the environment when retaining
-an assertion snapshot across `pop` or `reset`. Definition bodies never own a back
-edge to another definition, so recursive and mutually recursive inputs remain
-acyclic DAGs. Function substitution matches formal parameter identity and leaves
-inner quantifier binders intact.
-
-The parser accepts `declare-heap`, `sep.emp`, `pto`, `sep`, `wand`, and qualified
-`(as sep.nil Sort)`. It checks heap signatures and preserves spatial operators in
-the native DAG; heap satisfiability and inductive semantics belong to the consuming
-solver. `getHeapLocationSort()` and `getHeapDataSort()` expose the active signature.
-
-CMake clients that only need native DAGs and exact numeric values can link
-`SOMTParser::somtparser_ir`. Its object files are shared with the full parser build.

@@ -202,6 +202,16 @@ void test_int_div_floor_negative() {
     VERIFY(s == "(- 3)");
 }
 
+void test_dump_integral_real_sort() {
+    ParserPtr parser = newParser();
+    VERIFY(dumpSMTLIB2(parser->mkConstReal(std::string("0"))) == "0.0");
+    VERIFY(dumpSMTLIB2(parser->mkConstReal(std::string("-2.000"))) == "(- 2.0)");
+    VERIFY(dumpSMTLIB2(parser->mkConstReal(std::string("123456789012345678901234567890")))
+           == "123456789012345678901234567890.0");
+    VERIFY(dumpSMTLIB2(parser->mkConstInt(0)) == "0");
+    VERIFY(dumpSMTLIB2(parser->mkConstInt(-2)) == "(- 2)");
+}
+
 int main() {
     std::cout << "======= Number Semantics Tests =======" << std::endl;
 
@@ -215,6 +225,7 @@ int main() {
     test_toRationalExact_rejects_real();
     test_asIntegerExact_rejects_non_integer();
     test_dump_real_fraction();
+    test_dump_integral_real_sort();
     test_negative_zero_canonical();
     test_rational_integer_canonical();
     test_parsed_literals_exact();

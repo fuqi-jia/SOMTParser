@@ -32,6 +32,7 @@ Homepage = "https://github.com/fuqi-jia/SOMTParser"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
+benchmark = ["z3-solver==5.1.0.0"]
 
 [tool.scikit-build]
 sdist.exclude = [".claude"]
@@ -42,6 +43,10 @@ cmake.args = [
 ]
 wheel.packages = ["python/somtparser"]
 wheel.install-dir = "somtparser"
+# The extension statically links the SMT core. C++ archives,
+# headers, and CMake package files belong to a normal CMake installation.
+install.components = ["Python"]
 
 [tool.pytest.ini_options]
 testpaths = ["test/python"]
+filterwarnings = ["error"]

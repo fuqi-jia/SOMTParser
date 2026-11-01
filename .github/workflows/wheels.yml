@@ -14,8 +14,16 @@ name: Build Wheels
 
 on:
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Recheck Windows wheels without rebuilding other platforms
+        type: boolean
+        default: false
   push:
     tags: [ "v*" ]
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
 
 jobs:
   check_version:
@@ -54,13 +62,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-          - os: macos-15-intel   # last free x86_64 macOS runner (until Aug 2027)
-            macos-target: "15.0"
-          - os: macos-14         # arm64
-            macos-target: "14.0"
-          - os: windows-latest
+        # Tagged releases always build all platforms. A manual Windows-only
+        # retry still checks every supported CPython version on that platform.
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest"}]' || '[{"os":"ubuntu-latest"},{"os":"macos-15-intel","macos-target":"15.0"},{"os":"macos-14","macos-target":"14.0"},{"os":"windows-latest"}]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -78,6 +82,26 @@ jobs:
           C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           vcpkg install gmp:x64-windows mpfr:x64-windows
 
+      - name: Select matching MSVC runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ installation not found" }
+          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $redist) { throw "MSVC redistributable not found" }
+          $crt = Get-ChildItem "$($redist.FullName)\x64" -Directory -Filter 'Microsoft.VC*.CRT' |
+            Where-Object { Test-Path "$($_.FullName)\msvcp140.dll" } | Select-Object -First 1
+          if (-not $crt) { throw "x64 MSVC runtime not found" }
+          $runtime = "$env:RUNNER_TEMP\somtparser-msvc-runtime"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          Copy-Item "$($crt.FullName)\*.dll" $runtime
+          Write-Host "Wheel runtime: $($crt.FullName)"
+          "SOMTPARSER_MSVC_RUNTIME=$runtime" >> $env:GITHUB_ENV
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v4.2.0  # no floating major tag exists
         env:
@@ -89,20 +113,28 @@ jobs:
           CIBW_ARCHS_WINDOWS: AMD64
           # manylinux containers are yum-based
           CIBW_BEFORE_ALL_LINUX: yum install -y gmp-devel mpfr-devel
+          CIBW_ENVIRONMENT_LINUX: CMAKE_ARGS="-DSOMTPARSER_WARNINGS_AS_ERRORS=ON"
           # no CMAKE_PREFIX_PATH here: FindGMP/FindMPFR query `brew --prefix`
           # themselves, and a -D override would clobber the pybind11 search
           # path that scikit-build-core injects
           CIBW_ENVIRONMENT_MACOS: >-
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos-target }}
+            CMAKE_ARGS="-DSOMTPARSER_WARNINGS_AS_ERRORS=ON"
           CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DSOMTPARSER_WARNINGS_AS_ERRORS=ON"
           CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
           # gmp/mpfr DLLs live in the vcpkg tree, which is not on PATH
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
-            delvewheel repair -w {dest_dir}
-            --add-path C:/vcpkg/installed/x64-windows/bin {wheel}
-          CIBW_TEST_REQUIRES: pytest
-          CIBW_TEST_COMMAND: pytest {project}/test/python -q
+            python -W error -m delvewheel repair -w {dest_dir}
+            --add-path "%SOMTPARSER_MSVC_RUNTIME%;C:/vcpkg/installed/x64-windows/bin" {wheel}
+          CIBW_TEST_REQUIRES: "pytest z3-solver==5.1.0.0"
+          # Full regression runs on Python 3.9/3.12 in ci.yml. Each wheel
+          # validates its installed extension and representative public APIs.
+          CIBW_TEST_COMMAND: >-
+            python -W error -m pytest -q
+            "{project}/test/python/test_parse.py" "{project}/test/python/test_node.py"
+            "{project}/test/python/test_model_eval.py" "{project}/test/python/test_omt.py"
+            "{project}/test/python/test_fp_bv_rounding.py"
 
       - uses: actions/upload-artifact@v7
         with:
