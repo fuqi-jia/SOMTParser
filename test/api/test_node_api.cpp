@@ -88,6 +88,40 @@ int main() {
         VERIFY(false && "should not iterate");
     }
     std::cout << "Null node: safe defaults OK" << std::endl;
+
+    // Reallocation and rehashing must preserve canonical handles and indices.
+    Node retained;
+    {
+        NodeManager manager;
+        const auto integer = SortManager::getInt();
+        const auto boolean = SortManager::getBool();
+        Node first = manager.createNode(integer, NODE_KIND::NT_VAR, "first");
+        Node one = manager.createNode(integer, 1);
+        retained = manager.createNode(integer, NODE_KIND::NT_ADD, "+", {first, one});
+        const auto firstIndex = manager.getIndex(first);
+        const auto sumIndex = manager.getIndex(retained);
+        for (size_t i = 0; i < 20000; ++i) {
+            Node variable = manager.createNode(integer, NODE_KIND::NT_VAR,
+                                               "growth_" + std::to_string(i));
+            VERIFY(manager.getNode(manager.getIndex(variable)) == variable);
+            if (i % 257 == 0) {
+                VERIFY(manager.createNode(integer, NODE_KIND::NT_VAR, "first") == first);
+                VERIFY(manager.createNode(integer, NODE_KIND::NT_ADD, "+", {first, one}) == retained);
+                VERIFY(manager.getIndex(first) == firstIndex);
+                VERIFY(manager.getIndex(retained) == sumIndex);
+            }
+        }
+        // Equal names in different sorts remain distinct after table growth.
+        Node predicate = manager.createNode(boolean, NODE_KIND::NT_VAR, "first");
+        VERIFY(predicate != first);
+        VERIFY(manager.createNode(boolean, NODE_KIND::NT_VAR, "first") == predicate);
+        manager.clear();
+        VERIFY(retained->getChild(0) == first);
+        VERIFY(retained->getChild(1) == one);
+    }
+    VERIFY(retained->getChildrenSize() == 2);
+    VERIFY(retained->getChild(0)->getName() == "first");
+    retained.reset();
     std::cout << "All Node API tests passed." << std::endl;
     return 0;
 }

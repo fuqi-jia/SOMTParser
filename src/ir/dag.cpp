@@ -2025,18 +2025,9 @@ namespace SOMTParser{
     // Static constant nodes are now defined inline in the header file
 
     NodeManager::NodeManager() {
-        // 1. Reserve before inserting anything
-        nodes.reserve(65536);
-        for (size_t i = 0; i < NUM_KINDS; i++) {
-            NODE_KIND kind = static_cast<NODE_KIND>(i);
-            if (static_kinds.count(kind) > 0) {
-                node_buckets[i].reserve(1);
-            }
-            else{
-                node_buckets[i].reserve(8192);
-            }
-        }
-        // 2. Initialize static constant nodes and insert them into buckets
+        // Grow the node vector and each kind's hash table on insertion. Most
+        // contexts use only a few kinds; reserving thousands of entries for
+        // every kind made creating and clearing even tiny contexts expensive.
         initializeStaticNodes();
     }
 
