@@ -166,7 +166,8 @@ namespace SOMTParser{
     };
     // NOTE: the last one is the number of kinds
     constexpr size_t NUM_KINDS = static_cast<size_t>(NODE_KIND::NUM_KINDS);
-    const std::unordered_set<NODE_KIND> static_kinds = {
+    // Share immutable lookup data across translation units.
+    inline const std::unordered_set<NODE_KIND> static_kinds = {
         NODE_KIND::NT_NULL,
         NODE_KIND::NT_UNKNOWN,
         NODE_KIND::NT_ERROR,
@@ -182,7 +183,7 @@ namespace SOMTParser{
         NODE_KIND::NT_POS_INFINITY,
         NODE_KIND::NT_NEG_INFINITY
     };
-    const std::unordered_map<std::string, NODE_KIND> kind_key_map = {
+    inline const std::unordered_map<std::string, NODE_KIND> kind_key_map = {
         {"true", NODE_KIND::NT_CONST_TRUE},
         {"false", NODE_KIND::NT_CONST_FALSE},
         {"pi", NODE_KIND::NT_CONST_PI},
@@ -195,7 +196,7 @@ namespace SOMTParser{
         {"-oo", NODE_KIND::NT_NEG_INFINITY},
         {"inf", NODE_KIND::NT_INFINITY},
     };
-    const std::unordered_map<std::string, NODE_KIND> oper_key_map = {
+    inline const std::unordered_map<std::string, NODE_KIND> oper_key_map = {
         {"sep.emp", NODE_KIND::NT_SEP_EMP},
         {"sep.nil", NODE_KIND::NT_SEP_NIL},
         {"pto", NODE_KIND::NT_SEP_PTO},
