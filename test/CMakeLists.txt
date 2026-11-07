@@ -1,4 +1,5 @@
 file(GLOB_RECURSE SOMTPARSER_TEST_SOURCES CONFIGURE_DEPENDS "*.cpp")
+list(FILTER SOMTPARSER_TEST_SOURCES EXCLUDE REGEX "/support/")
 
 set(SOMTPARSER_TEST_TARGETS)
 foreach(test_file IN LISTS SOMTPARSER_TEST_SOURCES)
@@ -27,6 +28,8 @@ foreach(test_file IN LISTS SOMTPARSER_TEST_SOURCES)
     set_tests_properties("SOMTParser.${test_name}" PROPERTIES
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 endforeach()
+
+target_sources(test_kind_tables PRIVATE support/kind_tables_other_tu.cpp)
 
 if(SOMTPARSER_TEST_TARGETS)
     add_custom_target(build_all_tests DEPENDS ${SOMTPARSER_TEST_TARGETS})
